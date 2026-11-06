@@ -3531,4 +3531,5 @@ recovery は `setenforce 0` で起動し、adbd が `u:r:su:s0`（root adb）で
 
 本書は 2026-11-07 02:41 のセッション終了時点で確定した。
 
-ソース全文は `charepa-root-source-code.md` に分離してある。
+ソース全文は同じ `docs/` にある `charepa-root-source-code.md` に分離してある。
+リポジトリのビルド手順と使い方は `../README.md` を見てください。
