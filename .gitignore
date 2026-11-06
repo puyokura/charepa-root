@@ -1,0 +1,27 @@
+# Build artefacts
+build/
+*.o
+*.ko
+*.mod.c
+*.mod
+.tmp_versions/
+Module.symvers
+
+# Keep the single shipped module
+!src/prebuilt/myroot.ko
+
+# Local-only material (never pushed)
+archive/
+experiments/
+research/
+
+# Logs and captured blobs
+*.log
+*.bin
+lastkmsg.txt
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,112 @@
+# charepa
+
+チャレンジタッチ / チャレンジパッド2 **TAB-A03-BR2**（Android 5.1、kernel 3.10.33、
+Marvell PXA1928、SELinux Enforcing、`user` ビルド）を、UART を使わず
+ソフトウェアだけで永続 root にするまでの全記録と、実際に動かしたコード。
+
+```text
+uid 2000 (shell, CapEff=0)  ->  uid 0, CapEff=0000001fffffffff, enforce=0
+                              再起動を跨いで自動復帰（2 回連続で実測）
+```
+
+- 期間: 2026-11-03 10:23 〜 2026-11-07 02:41 (JST)
+- 規模: 122 ターン / 4,507 ツール呼び出し / 約 40 時間
+- 制約: 物理アクセスは USB のみ。シリアルコンソール、JTAG、テストポイントは不可
+
+## 何が書いてあるか
+
+| 場所 | 内容 |
+| --- | --- |
+| `docs/charepa-root-full-story.md` | 全過程記録。19 章。局面ごとの判断・実測・失敗・撤回と、撤回 45 件の全一覧 |
+| `docs/charepa-root-source-code.md` | 本文が参照するソースの全文（`src/` の内容を埋め込み、SHA-256 付き） |
+| `docs/README.md` | 文書の読み方 |
+| `src/tools/` | 実機・QEMU で使ったツール 16 本 |
+| `src/module/` | root 化カーネルモジュール `myroot.ko` のソースと Makefile |
+| `src/prebuilt/myroot.ko` | 本セッションでビルドしたモジュール（156,576 バイト） |
+| `Makefile` | `make tools` / `make module KDIR=...` |
+
+実験の生データ（`k1`〜`k178` の 168 本、`b*` の 81 本、ログ、33MB のカーネルリーク）は
+このリポジトリには含めていない。
+
+## 突破した 4 つの壁
+
+| 壁 | 突破口 | 根拠 |
+| --- | --- | --- |
+| カーネル書き込み | `ION_IOC_PHYS` の `data->addr = meta->iova`。`arg` を検証せずカーネルポインタとして参照する | `src/tools/k178.c`、`docs/.../k73`/`k74` |
+| ケーパビリティ付与 | ストア値 `0x80000000 \| (k<<12)` の `k=16` で `CAP_SYS_MODULE` | `k126`、`k145` |
+| SELinux capability 全拒否 | `avc_entry+8` が `tclass=4` なのでゲートで厳密に判定でき、ストアが `avd.allowed` に落ちる | `k178` |
+| 永続化 | `file_contexts` にエントリの無い `calibinit.sh` が init ドメインのまま root で走る | `hook5.c` |
+
+値の制約（`0x80000000` 以上しか書けない）が有利に働いたのは `avd.allowed` と
+`cred->cap_effective` の 2 か所だけだった。理由は本文の第 14 章にある。
+
+## ビルド
+
+クロスコンパイラだけが必要。ホストは Linux x86_64 を想定。
+
+```bash
+make tools            # ./build/ に 16 本を aarch64 静的バイナリで出力
+file build/k178       # ELF 64-bit LSB executable, ARM aarch64, statically linked
+```
+
+モジュールはベンダー GPL ツリー（3.10.33、`.config` / `Module.symvers` を含む）が要る。
+
+```bash
+make -C "$KDIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+make -C "$KDIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
+make module KDIR="$KDIR"
+strings -a src/module/myroot.ko | grep vermagic
+# vermagic=3.10.33 SMP preempt mod_unload aarch64
+```
+
+`src/prebuilt/myroot.ko` は本セッションのビルドそのもの。
+SHA-256 `507ebb47b1517389f676524fffa0cb1cb1c22d976176b590153c8966e37307aa`。
+
+## 使い方
+
+```bash
+export ADB_SERIAL="$(adb devices | awk 'NR>1 && $2=="device" {print $1; exit}')"
+
+# 1. root を取る（窓指定。当たらなければ隣の窓へ）
+adb push build/k178 /data/local/tmp/k178
+adb shell "chmod 755 /data/local/tmp/k178"
+adb shell "/data/local/tmp/k178 4e000000 50000000"
+adb shell "echo 1 > /proc/myroot; id"
+
+# 2. 永続化（/system を rw にして起動フックを置く）
+adb push src/prebuilt/myroot.ko /data/local/tmp/myroot.ko
+adb push build/modload          /data/local/tmp/modload
+adb push build/hook5            /data/local/tmp/hook5
+adb shell "/data/local/tmp/hook5"
+
+# 3. 再起動して、何もせずに root か確認
+adb reboot && sleep 60
+adb shell "cat /proc/modules | grep myroot; cat /sys/fs/selinux/enforce; id"
+```
+
+`k178` の窓は `42000000`〜`4f000000` 帯が当たりやすい（実測 10 件、最小 6 ストア）。
+`src/tools/hunt2.sh` は窓を順に回すハンターで、`ADB_SERIAL` と `ADB_SUDO=1` で
+sudo の有無を切り替える。
+
+## 注意
+
+- **`k138` を実行しないこと。** ゲートが「テスト兼書き込み」であることを
+  意図的に壊しながら証明する計器で、端末がパニックする前提。読むだけにする。
+- **`broot3` は QEMU 専用。** 実機では `readv` の再確保が安定せず、
+  `BINDER_THREAD_EXIT` の番号を直した版でも 5/6 止まり。実機の経路は ION（`k178`）。
+- **`k178` は生きたカーネル構造体を壊しうる。** 偽陽性のストア数がそのまま危険度になる。
+  938 ストアで 6 秒後にパニック、45 ストアで `/system/bin/toolbox` が後から壊れ、
+  6 ストアで無傷だった。
+- 復旧経路は `recov.c` で事前に実測してある（recovery が permissive、adbd が
+  `u:r:su:s0`、`misc` に `boot-recovery` を書けば入れる）。
+
+## 環境
+
+対象は筆者が所有する実機 1 台で、シリアルは本文でも伏せてある。
+ホストは SSH 越しの Linux（adb は `sudo -n adb`）で、クロスコンパイルは
+`aarch64-linux-gnu-gcc 14.2.0 -static -O2`。QEMU には同じベンダーカーネルを
+起動して検証した（`docs` 第 4 章 4.9 節）。
+
+## ライセンス
+
+MIT。`LICENSE` を参照。同梱の `src/prebuilt/myroot.ko` も同じ条件で配布する。
