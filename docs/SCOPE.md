@@ -1,4 +1,4 @@
-# このリポジトリの位置づけ
+﻿# このリポジトリの位置づけと範囲
 
 利用者が所有する実機 1 台（チャレンジタッチ / チャレンジパッド2 **TAB-A03-BR2**、
 Android 5.1、kernel 3.10.33、Marvell PXA1928）に対して、UART を使わず
@@ -15,6 +15,7 @@ Android 5.1、kernel 3.10.33、Marvell PXA1928）に対して、UART を使わ�
 | `docs/charepa-root-full-story.md` | 全過程記録。19 章。判断・実測・失敗・撤回（45 件）・教訓・付録 |
 | `docs/charepa-root-source-code.md` | 本文が参照するソースの全文。`src/` の内容を埋め込み、SHA-256 付き |
 | `docs/README.md` | 文書の読み方、章立て、記述の約束 |
+| `CONTRIBUTING.md` | 文書とコードを更新するときの手順 |
 | `src/tools/` | 実機・QEMU で使ったツール 16 本 |
 | `src/module/` | root 化カーネルモジュールのソースと Makefile |
 | `src/prebuilt/myroot.ko` | 本セッションでビルドしたモジュール（156,576 バイト） |
