@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # Simulate the CI assertions against the checked-out tree.
 set -eu
 cd "$(dirname "$0")/.."
@@ -32,7 +32,7 @@ for f in docs/*.md README.md CONTRIBUTING.md; do
 done
 
 echo "== no host identifiers =="
-files=$(git ls-files | grep -v '\.ko$')
+files=$(git ls-files | grep -v '\.ko$' | grep -v '^scripts/verify\.sh$')
 if echo "$files" | xargs grep -l -E 'C:\\Users|/home/|192\.168\.' 2>/dev/null | grep -q .; then
   echo "host path leak"; exit 1
 fi
