@@ -1,4 +1,4 @@
-# charepa
+﻿# charepa
 
 チャレンジタッチ / チャレンジパッド2 **TAB-A03-BR2**（Android 5.1、kernel 3.10.33、
 Marvell PXA1928、SELinux Enforcing、`user` ビルド）を、UART を使わず
@@ -20,19 +20,21 @@ uid 2000 (shell, CapEff=0)  ->  uid 0, CapEff=0000001fffffffff, enforce=0
 | `docs/charepa-root-full-story.md` | 全過程記録。19 章。局面ごとの判断・実測・失敗・撤回と、撤回 45 件の全一覧 |
 | `docs/charepa-root-source-code.md` | 本文が参照するソースの全文（`src/` の内容を埋め込み、SHA-256 付き） |
 | `docs/README.md` | 文書の読み方 |
+| `docs/SCOPE.md` | 対象・到達点・含めていないもの |
+| `CONTRIBUTING.md` | 文書とコードの更新手順 |
 | `src/tools/` | 実機・QEMU で使ったツール 16 本 |
 | `src/module/` | root 化カーネルモジュール `myroot.ko` のソースと Makefile |
 | `src/prebuilt/myroot.ko` | 本セッションでビルドしたモジュール（156,576 バイト） |
 | `Makefile` | `make tools` / `make module KDIR=...` |
 
-実験の生データ（`k1`〜`k178` の 168 本、`b*` の 81 本、ログ、33MB のカーネルリーク）は
-このリポジトリには含めていない。
+実験の生データ（`k1`〜`k178` の 168 本、`b*` の 81 本、ログ、33MB のカーネルリーク）と、
+他者の公開物から取得した調査メモは、このリポジトリに含めていない。
 
 ## 突破した 4 つの壁
 
 | 壁 | 突破口 | 根拠 |
 | --- | --- | --- |
-| カーネル書き込み | `ION_IOC_PHYS` の `data->addr = meta->iova`。`arg` を検証せずカーネルポインタとして参照する | `src/tools/k178.c`、`docs/.../k73`/`k74` |
+| カーネル書き込み | `ION_IOC_PHYS` の `data->addr = meta->iova`。`arg` を検証せずカーネルポインタとして参照する | `src/tools/k178.c`、本文 8.8.5 節（`k73`/`k74`） |
 | ケーパビリティ付与 | ストア値 `0x80000000 \| (k<<12)` の `k=16` で `CAP_SYS_MODULE` | `k126`、`k145` |
 | SELinux capability 全拒否 | `avc_entry+8` が `tclass=4` なのでゲートで厳密に判定でき、ストアが `avd.allowed` に落ちる | `k178` |
 | 永続化 | `file_contexts` にエントリの無い `calibinit.sh` が init ドメインのまま root で走る | `hook5.c` |
