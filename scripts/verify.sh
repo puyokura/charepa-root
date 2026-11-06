@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Simulate the CI assertions against the checked-out tree.
 set -eu
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 echo "== tools =="
 rm -rf build
-make tools >/dev/null
+make -C . tools >/dev/null 2>&1
 count=0
 for f in build/*; do
   file "$f" | grep -q 'ARM aarch64' || { echo "$f is not aarch64"; exit 1; }
@@ -32,7 +32,8 @@ for f in docs/*.md README.md CONTRIBUTING.md; do
 done
 
 echo "== no host identifiers =="
-if git ls-files | grep -v '\.ko$' | xargs grep -l -E 'C:\\Users|/home/|192\.168\.' 2>/dev/null; then
+files=$(git ls-files | grep -v '\.ko$')
+if echo "$files" | xargs grep -l -E 'C:\\Users|/home/|192\.168\.' 2>/dev/null | grep -q .; then
   echo "host path leak"; exit 1
 fi
 echo "clean"
