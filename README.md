@@ -1,50 +1,48 @@
-﻿# charepa
+# charepa-root
 
 チャレンジタッチ / チャレンジパッド2 **TAB-A03-BR2**（Android 5.1、kernel 3.10.33、
-Marvell PXA1928、SELinux Enforcing、`user` ビルド）を、UART を使わず
-ソフトウェアだけで永続 root にするまでの全記録と、実際に動かしたコード。
+Marvell PXA1928、SELinux Enforcing、`user` ビルド）を、UART なしのソフトウェアだけで
+永続 root にした記録と、そのときに使ったコード。
 
-```text
+```
 uid 2000 (shell, CapEff=0)  ->  uid 0, CapEff=0000001fffffffff, enforce=0
-                              再起動を跨いで自動復帰（2 回連続で実測）
+                               再起動を跨いで自動復帰（2 回連続で実測）
 ```
 
-- 期間: 2026-11-03 10:23 〜 2026-11-07 02:41 (JST)
-- 規模: 122 ターン / 4,507 ツール呼び出し / 約 40 時間
-- 制約: 物理アクセスは USB のみ。シリアルコンソール、JTAG、テストポイントは不可
+期間は 2026-11-03 10:23 〜 2026-11-07 02:41 (JST)、122 ターン、4,507 ツール呼び出し。
+物理アクセスは USB のみで、シリアルコンソール / JTAG / テストポイントは使えない。
 
-## 何が書いてあるか
+## 中身
 
-| 場所 | 内容 |
-| --- | --- |
-| `docs/charepa-root-full-story.md` | 全過程記録。19 章。局面ごとの判断・実測・失敗・撤回と、撤回 45 件の全一覧 |
-| `docs/charepa-root-source-code.md` | 本文が参照するソースの全文（`src/` の内容を埋め込み、SHA-256 付き） |
-| `docs/README.md` | 文書の読み方 |
-| `docs/SCOPE.md` | 対象・到達点・含めていないもの |
-| `CONTRIBUTING.md` | 文書とコードの更新手順 |
-| `src/tools/` | 実機・QEMU で使ったツール 16 本 |
-| `src/module/` | root 化カーネルモジュール `myroot.ko` のソースと Makefile |
-| `src/prebuilt/myroot.ko` | 本セッションでビルドしたモジュール（156,576 バイト） |
-| `Makefile` | `make tools` / `make module KDIR=...` |
+```
+docs/charepa-root-full-story.md     全過程記録（19 章、3,534 行）
+docs/charepa-root-source-code.md    src/ のソース全文（SHA-256 付き）
+docs/README.md                      章立てと読み方
+src/tools/                          実機・QEMU で使ったツール 16 本
+src/module/                         root 化モジュールのソースと Makefile
+src/prebuilt/myroot.ko              実際に動かしたモジュール（156,576 バイト）
+Makefile                            make tools / make module KDIR=...
+```
 
 実験の生データ（`k1`〜`k178` の 168 本、`b*` の 81 本、ログ、33MB のカーネルリーク）と、
-他者の公開物から取得した調査メモは、このリポジトリに含めていない。
+他者の公開物から落とした調査メモは含めていない。
 
 ## 突破した 4 つの壁
 
 | 壁 | 突破口 | 根拠 |
 | --- | --- | --- |
-| カーネル書き込み | `ION_IOC_PHYS` の `data->addr = meta->iova`。`arg` を検証せずカーネルポインタとして参照する | `src/tools/k178.c`、本文 8.8.5 節（`k73`/`k74`） |
+| カーネル書き込み | `ION_IOC_PHYS` が `arg` を検証せずカーネルポインタとして参照し、`data->addr = meta->iova` で書く | `src/tools/k178.c`、本文 8.8.5 節 |
 | ケーパビリティ付与 | ストア値 `0x80000000 \| (k<<12)` の `k=16` で `CAP_SYS_MODULE` | `k126`、`k145` |
 | SELinux capability 全拒否 | `avc_entry+8` が `tclass=4` なのでゲートで厳密に判定でき、ストアが `avd.allowed` に落ちる | `k178` |
 | 永続化 | `file_contexts` にエントリの無い `calibinit.sh` が init ドメインのまま root で走る | `hook5.c` |
 
-値の制約（`0x80000000` 以上しか書けない）が有利に働いたのは `avd.allowed` と
-`cred->cap_effective` の 2 か所だけだった。理由は本文の第 14 章にある。
+書き込める値は `0x80000000` 以上に限られ、ゼロも 1 も書けない。
+それが有利に働いたのは `avd.allowed` と `cred->cap_effective` の 2 か所だけだった。
+理由は本文の第 14 章にある。
 
 ## ビルド
 
-クロスコンパイラだけが必要。ホストは Linux x86_64 を想定。
+クロスコンパイラだけが必要。ホストは Linux x86_64。
 
 ```bash
 make tools            # ./build/ に 16 本を aarch64 静的バイナリで出力
@@ -104,10 +102,10 @@ sudo の有無を切り替える。
 
 ## 環境
 
-対象は筆者が所有する実機 1 台で、シリアルは本文でも伏せてある。
-ホストは SSH 越しの Linux（adb は `sudo -n adb`）で、クロスコンパイルは
+対象は手元の実機 1 台で、シリアルは本文でも伏せてある。
+ホストは SSH 越しの Linux（adb は `sudo -n adb`）、クロスコンパイルは
 `aarch64-linux-gnu-gcc 14.2.0 -static -O2`。QEMU には同じベンダーカーネルを
-起動して検証した（`docs` 第 4 章 4.9 節）。
+起動して検証した（本文 4.9 節）。
 
 ## ライセンス
 
