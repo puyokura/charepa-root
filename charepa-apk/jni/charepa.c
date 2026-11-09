@@ -697,16 +697,20 @@ static int install_hook(void)
             close(blk);
             return 0;
         }
-        /* Measured: without this the copy keeps the payload's label, so when
-         * the payload forks and execs it the kernel logs
-         *   avc: denied { execute_no_trans } path="/system/bin/debuggerd.real"
-         *   scontext=u:r:kernel:s0 tcontext=u:object_r:system_file:s0
-         * and the real daemon starts outside debuggerd's domain. It then never
-         * picks up crash reports: SIGSEGV was raised and logged by libc, but no
-         * tombstone was written. Giving the copy the original exec type puts
-         * the daemon back where init expects it. */
-        set_selinux_label(HOOK_REAL, "u:object_r:debuggerd_exec:s0");
     }
+    /* Measured: without this the copy keeps the payload's label, so when the
+     * payload forks and execs it the kernel logs
+     *   avc: denied { execute_no_trans } path="/system/bin/debuggerd.real"
+     *   scontext=u:r:kernel:s0 tcontext=u:object_r:system_file:s0
+     * and the real daemon starts outside debuggerd's domain. Giving the copy
+     * the original exec type puts the daemon back where init expects it.
+     *
+     * The label is set outside the guard above on purpose. A run that dies
+     * between the copy and the label leaves a correctly named file with the
+     * wrong type, and the next run would skip it because the file now exists.
+     * Measured: the tablet does reboot mid-install often enough for that to
+     * matter, so this step has to be repeatable rather than once. */
+    set_selinux_label(HOOK_REAL, "u:object_r:debuggerd_exec:s0");
     if (put_buf(HOOK_PATH, g_pl_buf, g_pl_len, 0755) != 0) {
         say("hook: payload copy FAILED; leaving the original in place\n");
         ioctl(blk, BLKROSET, &(int){1});
