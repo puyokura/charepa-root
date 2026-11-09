@@ -431,6 +431,28 @@ static const char *companion(const char *name)
 /* read a companion file into memory while the process can still trust the
  * page cache */
 static long slurp(const char *path, char **out);
+
+/* FNV-1a 64 of the module that the APK ships.
+ *
+ * Measured: the same file reads back as 0x6b973846fa5576b0 before a sweep and
+ * as 0x46eee07d4bcb11a4 after one, with the ELF header and the length still
+ * intact and the byte sum differing by a few dozen. That is the failure that
+ * makes init_module answer ENOEXEC on a module which loads fine at boot, and
+ * reading it into memory before the sweep does not prevent it: the copy in the
+ * file is what changes, and a later run reads the changed file.
+ *
+ * So the buffer is checked against this constant immediately before
+ * init_module. A mismatch is reported as what it is rather than being handed
+ * to the kernel as a mystery. */
+#define KO_FNV 0x6b973846fa5576b0ULL
+
+static unsigned long long fnv1a64(const unsigned char *p, long n)
+{
+    unsigned long long h = 0xcbf29ce484222325ULL;
+    for (long i = 0; i < n; i++) { h ^= p[i]; h *= 0x100000001b3ULL; }
+    return h;
+}
+
 static long preload_file(const char *name, char **out)
 {
     const char *path = companion(name);
@@ -452,6 +474,15 @@ static void preload_chain(void)
 static long load_module(void)
 {
     if (g_ko_len <= 0 || !g_ko_buf) { say("module was not preloaded\n"); return -1; }
+
+    /* The buffer was read before the sweep, so it cannot have been changed by
+     * this process. Check it anyway: the file on disk is what a previous run
+     * changed, and that is how a run ends up handing the kernel bytes it will
+     * refuse with ENOEXEC while the ELF header still looks right. */
+    { unsigned long long h = fnv1a64((const unsigned char *)g_ko_buf, g_ko_len);
+      say("load: fnv=0x%016llx want=0x%016llx %s\n", h, (unsigned long long)KO_FNV,
+          h == KO_FNV ? "match" : "MISMATCH"); }
+
     errno = 0;
     long rc = syscall(105, g_ko_buf, (unsigned long)g_ko_len, "");
     say("init_module rc=%ld errno=%d (%ld bytes)\n", rc, errno, g_ko_len);
