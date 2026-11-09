@@ -1,4 +1,4 @@
-﻿/* charepa.c - privilege transition for the Benesse tablets, driven from an app.
+/* charepa.c - privilege transition for the Benesse tablets, driven from an app.
  *
  * Two facts shape this code.
  *
@@ -423,6 +423,9 @@ static long load_module(void)
     errno = 0;
     long rc = syscall(105, g_ko_buf, (unsigned long)g_ko_len, "");
     say("init_module rc=%ld errno=%d (%ld bytes)\n", rc, errno, g_ko_len);
+    /* EEXIST (17) means this module is already in the kernel, which is the
+     * situation after the boot hook has done its job. That is not a failure. */
+    if (rc != 0 && errno == 17) { say("module already loaded\n"); return 0; }
     return rc;
 }
 
