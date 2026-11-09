@@ -84,7 +84,21 @@ what the app does, and it works from `CapBnd = 0`.
 `u:object_r:system_file:s0`. A label with no exec type means no SELinux type
 transition, so init starts the child in its own domain, which this policy does
 not restrict. The original binary is kept as `debuggerd.real` and the payload
-execs it afterwards, so crash handling still works.
+execs it afterwards.
+
+`debuggerd.real` gets its own label back, `u:object_r:debuggerd_exec:s0`. Without
+that the copy keeps the payload's `system_file` label, and the kernel logs
+
+```
+avc: denied { execute_no_trans } for pid=196 comm="debuggerd"
+     path="/system/bin/debuggerd.real" scontext=u:r:kernel:s0
+     tcontext=u:object_r:system_file:s0 tclass=file permissive=1
+```
+
+so the daemon starts in the wrong domain. It does not stop crash handling
+outright — this unit writes tombstones and `debuggerd` holds its two crash
+sockets either way — but starting it in the domain init intended is the correct
+arrangement, and the fix is one `setxattr`.
 
 Measured banner on every boot:
 
@@ -97,6 +111,27 @@ CHAREPA_BOOT: write /proc/myroot rc=1 errno=0 uid now 0
 
 The `enforce` write fails with EACCES in the init domain and is kept only as a
 record; the module sets enforcement itself.
+
+## Crash handling on this unit
+
+Two measurements, because the first conclusion drawn from them was wrong.
+
+`/data/tombstones` holds real captures written **after** the hook was installed:
+`tombstone_05` at 04:33 is a `SIGSEGV` in `com.instagram.android`, and
+`tombstone_02` at 04:29 is an `SIGABRT` from `dex2oat`. So crash reporting does
+work with the payload in place.
+
+What does not work is the `core_pattern` route: `init.rc` only sets
+`|/system/bin/core-compressor %e %t %p` under
+`on property:persist.sys.debug.coredump=enable`, that property is not set, the
+binary `core-compressor` does not exist on this image, and
+`/proc/sys/kernel/core_pattern` reads `core`. Crash reporting here runs through
+`debuggerd`'s own sockets, not through a core pipe.
+
+The wrong conclusion was worth keeping: a `kill -SEGV` on `sh` produced no
+tombstone, and that was read as the hook breaking crash handling. `sh` is not a
+zygote-managed process, so nothing captured it — the test was invalid, not the
+hook.
 
 ## A trap worth recording
 

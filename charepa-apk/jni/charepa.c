@@ -611,6 +611,50 @@ static int set_selinux_label(const char *path, const char *label)
 #define HOOK_PATH  "/system/bin/debuggerd"
 #define HOOK_REAL  "/system/bin/debuggerd.real"
 
+static int be_root(void);
+
+/* The label repair has to be reachable from the already-rooted path too.
+ *
+ * install_hook only runs on a unit that is not yet rooted, and it is
+ * idempotent about the saved copy: once debuggerd.real exists it is left
+ * alone. So a unit hooked by an older build keeps its wrong label even after
+ * this one runs. Measured: stripping the label back to system_file and then
+ * running `all` on a rooted unit re-rooted fine but left debuggerd.real as
+ * u:object_r:system_file:s0, because the short path returns before the hook
+ * code. This function is what those units run instead. */
+static void ensure_real_label(void)
+{
+    if (access(HOOK_REAL, F_OK) != 0) return;
+    { char cur[128] = {0};
+      if (getxattr(HOOK_REAL, "security.selinux", cur, sizeof cur - 1) > 0) {
+          if (strstr(cur, "debuggerd_exec")) { say("label: %s already correct\n", HOOK_REAL); return; }
+          say("label: %s carries %s; fixing\n", HOOK_REAL, cur);
+      } }
+
+    static const char *blocks[] = {
+        "/dev/block/platform/soc.1/by-name/system",
+        "/dev/block/by-name/system",
+        NULL
+    };
+    int blk = -1;
+    for (int i = 0; blocks[i]; i++) {
+        blk = open(blocks[i], O_RDWR);
+        if (blk >= 0) break;
+    }
+    if (blk < 0) { say("label: no system block device (errno=%d)\n", errno); return; }
+    ioctl(blk, BLKROSET, &(int){0});
+    if (mount(NULL, "/system", NULL, MS_REMOUNT, NULL) != 0) {
+        say("label: remount rw failed: %s\n", strerror(errno));
+        close(blk);
+        return;
+    }
+    set_selinux_label(HOOK_REAL, "u:object_r:debuggerd_exec:s0");
+    sync();
+    ioctl(blk, BLKROSET, &(int){1});
+    mount(NULL, "/system", NULL, MS_REMOUNT | MS_RDONLY, NULL);
+    close(blk);
+}
+
 static int install_hook(void)
 {
     if (g_pl_len <= 0 || !g_pl_buf) { say("hook: payload was not preloaded\n"); return 0; }
@@ -653,6 +697,15 @@ static int install_hook(void)
             close(blk);
             return 0;
         }
+        /* Measured: without this the copy keeps the payload's label, so when
+         * the payload forks and execs it the kernel logs
+         *   avc: denied { execute_no_trans } path="/system/bin/debuggerd.real"
+         *   scontext=u:r:kernel:s0 tcontext=u:object_r:system_file:s0
+         * and the real daemon starts outside debuggerd's domain. It then never
+         * picks up crash reports: SIGSEGV was raised and logged by libc, but no
+         * tombstone was written. Giving the copy the original exec type puts
+         * the daemon back where init expects it. */
+        set_selinux_label(HOOK_REAL, "u:object_r:debuggerd_exec:s0");
     }
     if (put_buf(HOOK_PATH, g_pl_buf, g_pl_len, 0755) != 0) {
         say("hook: payload copy FAILED; leaving the original in place\n");
@@ -733,6 +786,8 @@ int main(int argc, char **argv)
           if (w == 1) {
               say("already rooted: /proc/myroot accepted a write\n");
               say("uid=%d euid=%d capget=0x%08x\n", getuid(), geteuid(), eff_of(0));
+              /* a unit hooked by an older build still needs this */
+              ensure_real_label();
               say("RESULT ROOT uid=%d (via /proc/myroot)\n", getuid());
               return getuid() == 0 ? 0 : 1;
           }
