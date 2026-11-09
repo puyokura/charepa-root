@@ -1,4 +1,4 @@
-/* charepa.c - privilege transition for the Benesse tablets, driven from an app.
+﻿/* charepa.c - privilege transition for the Benesse tablets, driven from an app.
  *
  * Two facts shape this code.
  *
@@ -63,6 +63,31 @@ struct ion_handle_data { s32 handle; };
 
 #define PAGE_OFFSET_V 0xffffffc000000000ULL
 #define MEMSTART      0x01000000ULL
+
+/* The linear-map window is derived from /proc/iomem at run time rather than
+ * assumed. Measured on BS: "System RAM 01000000-7fffffff", "Kernel code
+ * 01080000-01a78c13". A model whose RAM ends somewhere else would be scanned
+ * past its end without this, and every probe beyond the end is a wasted store. */
+static void say(const char *fmt, ...);   /* defined below, used by read_iomem */
+static u32 g_ram_lo = 0x01000000u, g_ram_hi = 0x7f000000u;
+
+static void read_iomem(void)
+{
+    FILE *f = fopen("/proc/iomem", "r");
+    if (!f) { say("iomem unreadable errno=%d, using defaults\n", errno); return; }
+    char l[256];
+    while (fgets(l, sizeof l, f)) {
+        if (!strstr(l, "System RAM")) continue;
+        unsigned long a = 0, b = 0;
+        if (sscanf(l, " %lx-%lx", &a, &b) == 2 && b > a) {
+            g_ram_lo = (u32)a;
+            g_ram_hi = (u32)b;
+            say("iomem: System RAM 0x%08x..0x%08x\n", g_ram_lo, g_ram_hi);
+            break;
+        }
+    }
+    fclose(f);
+}
 #define PGSZ          4096
 #define CRED_STEP     192
 #define CRED_SLOTS    21
@@ -677,6 +702,7 @@ int main(int argc, char **argv)
     say("ion fd=%d\n", ionfd);
 
     preload_chain();
+    read_iomem();
 
     if (argc >= 2 && !strcmp(argv[1], "validate")) return cmd_validate();
     if (argc >= 2 && !strcmp(argv[1], "info")) return cmd_info();
@@ -700,7 +726,7 @@ int main(int argc, char **argv)
           }
       } }
 
-    u32 lo = 0x02000000u, hi = 0x7f000000u;
+    u32 lo = g_ram_lo, hi = g_ram_hi;
     int window = 2048; long budget = 2600; u32 avclo = 0, avchi = 0;
     if (argc >= 4) { lo = (u32)strtoul(argv[2], NULL, 16); hi = (u32)strtoul(argv[3], NULL, 16); }
     if (argc >= 5) window = atoi(argv[4]);
