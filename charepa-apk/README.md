@@ -11,12 +11,21 @@ Everything below was measured on a TAB-A03-BS (Android 5.1, kernel 3.10.33
 | Claim | Evidence |
 | --- | --- |
 | Root from the adb shell context | `charepa all` reached `init_module rc=0`, then `/proc/myroot` gave `uid=0(root)`, `Permissive` |
-| Root survives a reboot | three consecutive reboots: the payload ran in `u:r:init:s0`, `init_module rc=0`, `/proc/myroot` recreated; one byte through it gave `uid=0` every time |
+| Root survives a reboot | ten reboots, power cuts and USB drops: each time the payload ran in `u:r:init:s0`, `init_module rc=0`, recreated `/proc/myroot`, and one byte through it gave `uid=0` |
+| Root survives deleting the app | `pm uninstall com.charepa`, then a reboot: `/proc/myroot` came back and answered, with no APK installed at all |
 | The app itself can reach root | `am start --es mode all` ended with `RESULT ROOT uid=0`, from a process whose own `CapBnd` is `0000000000000000` |
-| The 4-byte write works at all | `charepa validate` prints `VALIDATE PASS` from inside the app |
+| Running twice is safe | a unit whose hook is already installed answers `EEXIST` from `init_module`; that now counts as success, so the second run reports `already rooted` and `RESULT ROOT uid=0` instead of a false failure |
+| The 4-byte write works at all | `charepa validate` prints `VALIDATE PASS` from inside the app, including on the binary CI produced |
+
+The shipped `charepa.apk` was measured as the whole deliverable: installed on a
+unit with no hook, `am start --es mode all` reached `RESULT ROOT uid=0` with
+`終了コード 0`, using nothing but the three assets inside the APK.
 
 TAB-A03-BR2 is **not** verified. The partitions are the same shape as BS
-(`system` p16, `boot` p15, `recovery` p7), but nothing has been run on one.
+(`system` p16, `boot` p15, `recovery` p7), and the two models share USB ID
+`0bb4:4e16`, the kernel version and the platform, but nothing has been run on
+one. The workflow refuses to start unless `ro.product.model` is
+`TAB-A03-BR2`, so it cannot be pointed at a BS by mistake.
 
 ## The two halves, and why the order matters
 
