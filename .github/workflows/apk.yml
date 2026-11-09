@@ -32,8 +32,21 @@ jobs:
       - name: Install the cross compiler and Java
         run: |
           sudo apt-get update
+          # libc6-dev-arm64-cross is only a Recommends of gcc-aarch64-linux-gnu
+          # on current Ubuntu, so --no-install-recommends drops the cross
+          # headers and the compiler silently falls back to /usr/include,
+          # where bits/libc-header-start.h does not exist. It is named
+          # explicitly here for that reason.
           sudo apt-get install -y --no-install-recommends \
-            gcc-aarch64-linux-gnu openjdk-17-jdk-headless curl unzip
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+            openjdk-17-jdk-headless curl unzip
+
+      - name: Prove the cross compiler works before building
+        run: |
+          printf '#include <stdio.h>\nint main(void){return 0;}\n' > "$RUNNER_TEMP/t.c"
+          aarch64-linux-gnu-gcc -static -o "$RUNNER_TEMP/t" "$RUNNER_TEMP/t.c"
+          file "$RUNNER_TEMP/t"
+          aarch64-linux-gnu-gcc -print-sysroot
 
       - name: Fetch build-tools and the platform jar
         run: |
