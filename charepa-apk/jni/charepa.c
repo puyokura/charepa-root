@@ -1,4 +1,4 @@
-/* charepa.c - privilege transition for the Benesse tablets, driven from an app.
+﻿/* charepa.c - privilege transition for the Benesse tablets, driven from an app.
  *
  * Two facts shape this code.
  *
@@ -581,8 +581,23 @@ static int install_hook(void)
     if (g_pl_len <= 0 || !g_pl_buf) { say("hook: payload was not preloaded\n"); return 0; }
     if (be_root() != 0) { say("hook: no root\n"); return 0; }
 
-    int blk = open("/dev/block/platform/soc.1/by-name/system", O_RDWR);
-    if (blk < 0) { say("hook: open block: %s\n", strerror(errno)); return 0; }
+    /* The by-name path differs between the two models: measured, BS has
+     * /dev/block/platform/soc.1/by-name and no /dev/block/by-name. Try both,
+     * because the APK has to serve either unit without a flag. */
+    static const char *blocks[] = {
+        "/dev/block/platform/soc.1/by-name/system",
+        "/dev/block/platform/*/by-name/system",          /* glob is not used below */
+        "/dev/block/by-name/system",
+        NULL
+    };
+    int blk = -1; const char *used = NULL;
+    for (int i = 0; blocks[i]; i++) {
+        if (blocks[i][0] == '/' && strstr(blocks[i], "*")) continue;
+        blk = open(blocks[i], O_RDWR);
+        if (blk >= 0) { used = blocks[i]; break; }
+    }
+    if (blk < 0) { say("hook: no system block device (errno=%d)\n", errno); return 0; }
+    say("hook: block=%s\n", used);
     ioctl(blk, BLKROSET, &(int){0});
     if (mount(NULL, "/system", NULL, MS_REMOUNT, NULL) != 0) {
         say("hook: remount rw: %s\n", strerror(errno));
