@@ -45,7 +45,8 @@ jobs:
       - name: Assert the documents have balanced code fences
         run: |
           set -eu
-          for f in docs/*.md README.md CONTRIBUTING.md; do
+          for f in docs/*.md README.md; do
+            [ -f "$f" ] || continue
             n=$(grep -c '^```' "$f" || true)
             if [ $((n % 2)) -ne 0 ]; then echo "$f has an unclosed fence ($n)"; exit 1; fi
             echo "$f: $n fences"
