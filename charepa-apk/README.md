@@ -82,8 +82,11 @@ No Gradle. `build.sh` runs `aarch64-linux-gnu-gcc` for the two static binaries,
 BT=<build-tools> ANDROID_JAR=<platform>/android.jar ./build.sh charepa.apk
 ```
 
-`.github/workflows/build.yml` does the same on a stock runner and uploads the
-APK as an artifact, plus a release asset for tags.
+`.github/workflows/apk.yml` at the repository root does the same on a stock
+runner and uploads the APK as an artifact, plus a release asset for tags. The
+workflow lives at the root because GitHub only picks up `/.github/workflows`;
+a copy under `charepa-apk/` was never loaded (`gh workflow list` showed only
+the root `build` job).
 
 ## Use
 

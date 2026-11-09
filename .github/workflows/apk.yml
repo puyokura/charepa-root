@@ -1,11 +1,27 @@
-name: build
+name: apk
+
+# The APK project lives in charepa-apk/, and a workflow only counts when it sits
+# under .github/workflows at the repository root. Its own
+# charepa-apk/.github/workflows/build.yml was therefore never picked up:
+# measured with `gh workflow list`, which showed only the root `build` workflow.
+# This file is the one GitHub actually runs.
 
 on:
   push:
     branches: [ master, main ]
     tags: [ 'v*' ]
+    paths:
+      - 'charepa-apk/**'
+      - '.github/workflows/apk.yml'
   pull_request:
+    paths:
+      - 'charepa-apk/**'
+      - '.github/workflows/apk.yml'
   workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: charepa-apk
 
 jobs:
   apk:
@@ -46,6 +62,13 @@ jobs:
           grep -q 'assets/arm64/bootpayload' "$RUNNER_TEMP/contents.txt"
           grep -q 'assets/arm64/myroot.ko'   "$RUNNER_TEMP/contents.txt"
           grep -q 'classes.dex'              "$RUNNER_TEMP/contents.txt"
+
+      - name: Assert the module is the one shipped in the tree
+        run: |
+          sha256sum prebuilt/myroot.ko
+          test "$(sha256sum prebuilt/myroot.ko | cut -d' ' -f1)" = \
+               "507ebb47b1517389f676524fffa0cb1cb1c22d976176b590153c8966e37307aa"
+          strings -a prebuilt/myroot.ko | grep -q 'vermagic=3.10.33'
 
       - uses: actions/upload-artifact@v4
         with:

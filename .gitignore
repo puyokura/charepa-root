@@ -9,6 +9,7 @@ Module.symvers
 
 # Keep the single shipped module
 !src/prebuilt/myroot.ko
+!charepa-apk/prebuilt/myroot.ko
 
 # Local-only material (never pushed)
 archive/
