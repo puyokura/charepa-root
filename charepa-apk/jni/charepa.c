@@ -1,4 +1,4 @@
-﻿/* charepa.c - privilege transition for the Benesse tablets, driven from an app.
+/* charepa.c - privilege transition for the Benesse tablets, driven from an app.
  *
  * Two facts shape this code.
  *
@@ -102,6 +102,7 @@ struct cap_hdr { u32 version; s32 pid; };
 struct cap_data { u32 eff, prm, inh; };
 
 static FILE *LOG;
+static FILE *g_FILELOG;
 static int ionfd = -1;
 
 /* Measured on TAB-A03-BS: the ION sweep writes the carrier's IOVA into whatever
@@ -123,6 +124,12 @@ static void say(const char *fmt, ...)
     char b[256]; va_list ap; va_start(ap, fmt);
     vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
     fputs(b, LOG); fflush(LOG);
+    /* A run that stores into the wrong place reboots the tablet before the
+     * process can flush anything more, and the sweep can reach hundreds of
+     * megabytes. Mirroring each line to a file on /data means the geometry of
+     * a missed attempt survives the reboot, which is what makes the window
+     * tunable instead of guesswork. */
+    if (g_FILELOG) { fputs(b, g_FILELOG); fflush(g_FILELOG); }
 }
 
 static int gate(u64 a)
@@ -675,6 +682,11 @@ static int install_hook(void)
 int main(int argc, char **argv)
 {
     LOG = stdout; setbuf(LOG, NULL);
+    /* /data/local/tmp is writable by the shell context, which is where the
+     * first-root run happens; an app process cannot create it there, so the
+     * mirror is skipped when the open fails. */
+    g_FILELOG = fopen("/data/local/tmp/charepa_try.log", "w");
+    if (g_FILELOG) setbuf(g_FILELOG, NULL);
     say("charepa pid=%d uid=%d\n", getpid(), getuid());
     {   /* the alphabet comes from this process's own cap_bset */
         FILE *st = fopen("/proc/self/status", "r");
