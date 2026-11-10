@@ -160,6 +160,14 @@ workflow lives at the root because GitHub only picks up `/.github/workflows`;
 a copy under `charepa-apk/` was never loaded (`gh workflow list` showed only
 the root `build` job).
 
+CI does not reproduce this repository's `charepa.apk` byte for byte, and the
+measured hashes say why: the runner compiles with a newer gcc than the machine
+used here, so `assets/arm64/charepa` comes out as d4239894… instead of
+5ee0c4e9… (bootpayload differs the same way). The module is the prebuilt one
+and does match, 507ebb47…. The APK kept in this directory is the build that was
+measured on the tablet; treat a CI artifact as a fresh build of the same
+source, not as the same bytes.
+
 ## Use
 
 Install the APK. That is the entire installation step: the Activity copies its
