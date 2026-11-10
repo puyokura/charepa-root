@@ -649,9 +649,84 @@ static int set_selinux_label(const char *path, const char *label)
  * Its usual job is handling crashes, so a failure here cannot stop the device
  * from booting. The payload execs the real binary immediately afterwards, so
  * the daemon is transparent once our work is done.
+ *
+ * This is the one part that is model-specific, and the earlier BR2 run used a
+ * different file: the record shows /system/bin/calibinit.sh (class main, no
+ * seclabel, no file_contexts entry) working there, and the BS init.rc has no
+ * calibinit stanza at all while debuggerd is present and running. So the target
+ * is resolved rather than assumed: the first one that exists and that init.rc
+ * actually starts wins, and the choice is logged. A unit where neither is
+ * reachable ends with "hook: no usable service path" instead of writing into a
+ * file nothing executes.
  */
-#define HOOK_PATH  "/system/bin/debuggerd"
-#define HOOK_REAL  "/system/bin/debuggerd.real"
+static const char *HOOK_PATH = "/system/bin/debuggerd";
+static const char *HOOK_REAL = "/system/bin/debuggerd.real";
+
+struct hook_target { const char *path; const char *real; const char *exec_type; };
+
+static const struct hook_target hook_targets[] = {
+    { "/system/bin/debuggerd",    "/system/bin/debuggerd.real",
+      "u:object_r:debuggerd_exec:s0" },
+    { "/system/bin/calibinit.sh", "/system/bin/calibinit.sh.real", NULL },
+    { NULL, NULL, NULL }
+};
+
+/* Is this path something init starts? Existence alone is not enough: the whole
+ * point is that init execs it at boot. For debuggerd the stanza is known to be
+ * `service debuggerd /system/bin/debuggerd` with `class main` on BS; calibinit
+ * appears as a `class main` service in the earlier BR2 record. Both were checked
+ * by reading init.rc on the unit that had them. */
+static int target_is_usable(const char *path)
+{
+    if (access(path, F_OK) != 0) return 0;
+    FILE *f = fopen("/init.rc", "r");
+    if (!f) {
+        /* init.rc is 0640 root; before root is obtained it cannot be read, and
+         * at that point nothing has been written yet either. Treat unreadable
+         * init.rc as "no opinion": fall back to existence, which is what the
+         * earlier runs relied on. */
+        say("hook: /init.rc unreadable, choosing by existence: %s\n", path);
+        return 1;
+    }
+    char line[512];
+    int found = 0;
+    int is_service = 0;
+    while (fgets(line, sizeof line, f)) {
+        if (!strncmp(line, "service ", 8)) {
+            /* The path has to end where the token ends. A plain strstr matched
+             * "debuggerd64" as a hit for "debuggerd": measured with a synthetic
+             * rc where only the 64-bit service existed, the predicate reported
+             * debuggerd usable and would have replaced a file nothing runs. */
+            const char *p = strstr(line, path);
+            size_t n = strlen(path);
+            is_service = p && (p[n] == ' ' || p[n] == '\n' || p[n] == '\r' || p[n] == 0);
+            if (is_service) found = 1;
+        } else if (is_service && !strncmp(line, "    class ", 10)) {
+            if (strstr(line, "main")) { fclose(f); return 1; }
+            is_service = 0;
+        } else if (line[0] != ' ' && line[0] != '\n') {
+            is_service = 0;
+        }
+    }
+    fclose(f);
+    return found ? 1 : 0;
+}
+
+/* Pick the target once, before anything is written. */
+static void choose_hook_target(void)
+{
+    for (int i = 0; hook_targets[i].path; i++) {
+        if (target_is_usable(hook_targets[i].path)) {
+            HOOK_PATH = hook_targets[i].path;
+            HOOK_REAL = hook_targets[i].real;
+            say("hook: target=%s (real=%s)\n", HOOK_PATH, HOOK_REAL);
+            return;
+        }
+    }
+    say("hook: no usable service path; nothing will be written\n");
+    HOOK_PATH = NULL;
+    HOOK_REAL = NULL;
+}
 
 static int be_root(void);
 
@@ -666,7 +741,7 @@ static int be_root(void);
  * code. This function is what those units run instead. */
 static void ensure_real_label(void)
 {
-    if (access(HOOK_REAL, F_OK) != 0) return;
+    if (!HOOK_REAL || access(HOOK_REAL, F_OK) != 0) return;
     { char cur[128] = {0};
       if (getxattr(HOOK_REAL, "security.selinux", cur, sizeof cur - 1) > 0) {
           if (strstr(cur, "debuggerd_exec")) { say("label: %s already correct\n", HOOK_REAL); return; }
@@ -701,6 +776,10 @@ static int install_hook(void)
 {
     if (g_pl_len <= 0 || !g_pl_buf) { say("hook: payload was not preloaded\n"); return 0; }
     if (be_root() != 0) { say("hook: no root\n"); return 0; }
+
+    /* now that init.rc is readable, decide which file to replace */
+    choose_hook_target();
+    if (!HOOK_PATH) return 0;
 
     /* The by-name path differs between the two models: measured, BS has
      * /dev/block/platform/soc.1/by-name and no /dev/block/by-name. Try both,
@@ -751,8 +830,16 @@ static int install_hook(void)
      * between the copy and the label leaves a correctly named file with the
      * wrong type, and the next run would skip it because the file now exists.
      * Measured: the tablet does reboot mid-install often enough for that to
-     * matter, so this step has to be repeatable rather than once. */
-    set_selinux_label(HOOK_REAL, "u:object_r:debuggerd_exec:s0");
+     * matter, so this step has to be repeatable rather than once.
+     *
+     * calibinit.sh carries no exec type of its own in the earlier BR2 record, so
+     * there is nothing to restore for it; the target table says so by leaving
+     * exec_type NULL. */
+    { const char *et = NULL;
+      for (int i = 0; hook_targets[i].path; i++)
+          if (hook_targets[i].path == HOOK_PATH) { et = hook_targets[i].exec_type; break; }
+      if (et) set_selinux_label(HOOK_REAL, et);
+      else say("hook: %s has no exec type to restore\n", HOOK_REAL); }
     if (put_buf(HOOK_PATH, g_pl_buf, g_pl_len, 0755) != 0) {
         say("hook: payload copy FAILED; leaving the original in place\n");
         ioctl(blk, BLKROSET, &(int){1});
