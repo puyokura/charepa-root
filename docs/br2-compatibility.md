@@ -56,6 +56,12 @@ vermagic=3.10.33 SMP preempt mod_unload aarch64
 - BR2 の `/proc/iomem` の `System RAM` 範囲 —— 未測定
 - BR2 の `by-name` パス —— 未測定
 - BR2 の `init.rc` の `debuggerd` stanza —— 未測定
+- **フック先が BR2 では別物だった可能性。** 以前の BR2 の記録では永続化に
+  `/system/bin/calibinit.sh`（`class main`、seclabel なし、`file_contexts` にエントリなし）
+  を使っており、成功している。現在の実装は `/system/bin/debuggerd` を差し替える。
+  BS の `init.rc` に `calibinit` は 1 件も無く（grep 0 件）、`debuggerd` が `class main` で
+  動いていることを実測したためこの選択だが、**BR2 で `debuggerd` が同じ位置にあるかは
+  未測定**。BR2 で `validate` とロードまで通ってフックだけ入らない場合は、まずここを見る。
 - `commit_creds` / `prepare_kernel_cred` / `selinux_enforcing` の輸出 —— BS では間接的に確認（モジュールがロードされた）。BR2 では未測定
 - `avc_node` の位置 —— 起動ごとに動く。BR2 では別途当たり待ちが必要
 
