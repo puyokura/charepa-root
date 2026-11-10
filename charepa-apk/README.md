@@ -290,7 +290,20 @@ Everything that can be tried without the screen has been: the MTP interface
 answers (`mtp-detect` reports the model and serial, `mtp-sendfile` writes files);
 `adb devices` stays empty across server restarts, root-hub port cycles on both
 `usb1-port2` and `usb1-port3`, a LAN sweep for 5555, and mDNS for `_adb._tcp`.
-The properties that make adbd start were part of what was deleted. Restoring
+
+The mechanism is visible in the descriptor. The tablet presents exactly one
+interface:
+
+```
+bInterfaceClass      255 (vendor specific)
+bInterfaceSubClass   255          <- MTP
+bInterfaceProtocol     0
+```
+
+adbd's interface is class `0xff`, subclass `0x42`, protocol `0x01`. With
+subclass `0xff` there is no interface for adb to claim, which is why every host
+side attempt changes nothing: the descriptor is produced by the device. The
+properties that make adbd start were part of what was deleted. Restoring
 them needs either a normal boot that rebuilds them, or the on-device setting —
 and the authorisation keys were kept in `/data/misc/adb`, so no new tap is
 needed once adbd comes back.
