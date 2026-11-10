@@ -302,8 +302,14 @@ prebuilt/myroot.ko       the module, built offline against the vendor tree
 app/                     the Activity that stages and runs the binaries
 tools/br2_verify.sh      the five checks for a BR2, refusing any other model
 tools/consistency.sh     checks the defaults in this file against charepa.c
+tools/target_test.c      the hook-target predicate, six cases (host cc, no unit)
+tools/br2_sim.sh         runs br2_verify.sh against a fake adb, control flow only
+tools/fake_adb.sh        the fake adb that simulates answers as a BR2
 charepa.apk              the built, signed deliverable
 ```
+
+`br2_sim.sh` is a simulation and says so in its own header: it proves the
+runbook's sequence and guards, not that anything works on a BR2.
 
 ## What is still blocked, and why it is not a code problem
 
