@@ -223,6 +223,29 @@ echo 0 > /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port2/disable
 
 The device comes back with root intact; a `reboot` is not needed.
 
+### What breaks adb, and what does not
+
+Removing `/data` by hand while the framework is not running is enough to lose
+adb until the tablet is restarted from its own screen. Measured here: after
+`/data/app`, `/data/data`, `/data/system` and `/data/property` were deleted with
+the device rooted, `pm list packages` returned zero, and on the next boot the
+USB identity changed from `0bb4:4e16` (adb + MTP) to `0474:0317` with a single
+interface, `iInterface = MTP`. `adb devices` and `fastboot devices` both stayed
+empty through 10 minutes of polling and a port cycle, because the properties
+that ask adbd to start were part of what had been deleted.
+
+A factory reset clears `/data` and then lets the framework rebuild those
+properties; deleting them from outside skips that step. Keeping `/data/misc/adb`
+preserves the host's authorisation key, so adb returns without a new on-device
+tap once the tablet boots normally again.
+
+The recovery route is not available on this unit either: `misc` accepts a
+`bootloader_message` (verified by writing `boot-recovery` at offset 0 and
+`--wipe_data` at offset 64 with `pwrite`, then reading both back), but a reboot
+leaves the block untouched and boots Android, so the bootloader here does not
+consult it. `am broadcast MASTER_CLEAR` returns `result=0` with no receiver, and
+there is no `/system/bin/recovery` inside the system image.
+
 ## Layout
 
 ```
