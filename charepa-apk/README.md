@@ -73,9 +73,23 @@ CHAREPA_BOOT: init_module rc=0 errno=0 (Success) bytes=156576
 CHAREPA_BOOT: write /proc/myroot rc=1 errno=0 uid now 0
 ```
 
-`pm uninstall com.charepa` followed by a reboot also came back with `uid=0`.
+`pm uninstall com.charepa` followed by two more reboots also came back with
+`uid=0`, with `pm list packages | grep -c charepa` answering `0` on each.
 `validate` printed `VALIDATE PASS`, and `/proc/iomem` reported `System RAM
 0x01000000..0x7fffffff`, the same range as the BS.
+
+That unit had kept the hook the earlier run installed (`calibinit.sh`), so after
+the measurement above it was put back alongside this build's `debuggerd` to see
+whether two hooks fight. They do not: `debuggerd` loads the module at 7.34s and
+`calibinit.sh` runs its own loader at 7.34s in the same boot, the second
+`init_module` returns `EEXIST` which counts as success, and the result is one
+loaded module and `uid=0`. Both names now appear in dmesg for that boot:
+
+```
+CHAREPA_BOOT: init_module rc=0 errno=0 (Success) bytes=156576
+myroot: debuggerd (pid 155) became uid 0 euid 0
+myroot: calibinit.sh (pid 161) became uid 0 euid 0
+```
 
 One difference was measured and fixed because of it: the BR2's `init.rc` has no
 `calibinit` stanza, and `service calibinit /system/bin/calibinit.sh` lives in
