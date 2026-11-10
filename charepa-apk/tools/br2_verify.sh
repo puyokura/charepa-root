@@ -65,6 +65,12 @@ echo '== 2. first root loop, using the APK only =='
 for i in $(seq 1 40); do
   ensure || { echo "  lost the device at attempt $i"; continue; }
   if hook_installed; then echo "*** hook present before attempt $i ***"; break; fi
+  # Re-stage from the APK. One sweep corrupts the staged myroot.ko (measured on
+  # the BS: fnv 0x6b973846fa5576b0 -> 0x46eee07d4bcb11a4), and every later
+  # init_module then answers ENOEXEC. stage() rewrites files/bin on each launch.
+  D 'am force-stop com.charepa' >/dev/null 2>&1
+  D 'am start -W -n com.charepa/.MainActivity --es mode validate' >/dev/null 2>&1
+  sleep 8
   D 'run-as com.charepa /data/data/com.charepa/files/bin/charepa all' > "/tmp/br2_$i.txt" 2>&1
   printf '%s: ' "$i"
   grep -aE 'module_errno=|AVC win|init_module|hook:|RESULT' "/tmp/br2_$i.txt" 2>/dev/null | tr '\n' ' '
