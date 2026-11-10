@@ -681,6 +681,31 @@ static int put_buf(const char *dst, const char *b, long n, mode_t mode)
     if (w != (ssize_t)n) { say("  short write %s (%zd/%ld)\n", tmp, w, n); unlink(tmp); return -1; }
     if (rename(tmp, dst) != 0) { say("  rename %s: %s\n", dst, strerror(errno)); unlink(tmp); return -1; }
     say("  %s <- buffer (%ld bytes)\n", dst, n);
+    /* Read back what the medium now holds.
+     *
+     * This comes from src/tools/chk.c, which asked the same question after its
+     * own write ("can we read it back byte-identical?"). The reason it matters
+     * here is specific: the sweep below has already run by the time this code
+     * executes on some paths, and it is known to have rewritten a file's page
+     * cache page. A write that reports success while the file on disk is
+     * different is exactly the failure that made init_module answer ENOEXEC on
+     * a module that loads fine at boot. Checking now turns that into a message
+     * instead of a mystery on the next reboot. */
+    { int r = open(dst, O_RDONLY);
+      if (r < 0) { say("  verify %s: %s\n", dst, strerror(errno)); return -1; }
+      char *rb = malloc(n + 1);
+      long got = 0;
+      if (rb) {
+          ssize_t k;
+          while (got < n && (k = read(r, rb + got, n - got)) > 0) got += k;
+      }
+      close(r);
+      int same = rb && got == n && memcmp(rb, b, n) == 0;
+      say("  verify %s: %s (%ld bytes read back)\n", dst,
+          same ? "identical" : "DIFFERS FROM WHAT WAS WRITTEN", got);
+      free(rb);
+      if (!same) return -1;
+    }
     return 0;
 }
 
