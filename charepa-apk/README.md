@@ -231,12 +231,19 @@ Once the hook is in, the app is the entry point:
 adb shell am start -n com.charepa/.MainActivity --es mode all
 ```
 
-It reports `RESULT ROOT uid=0` and exits 0. From then on any process that can
-write one byte to `/proc/myroot` is root:
+It reports `RESULT ROOT uid=0 (persistent)` and exits 0. From then on any
+process that can write one byte to `/proc/myroot` is root:
 
 ```sh
 adb shell 'echo 1 > /proc/myroot; id'
 ```
+
+Root now and root after a reboot are reported separately, because they are
+different outcomes: a run that gets uid 0 but fails to install the hook used to
+print the same line and exit 0, and the device came back unrooted with nothing
+in the log to say why. That case now ends with
+`RESULT ROOT uid=0 but the hook failed; a reboot will not restore it` and exit
+code 1.
 
 `validate` only touches memory the process owns and prints PASS or FAIL, which
 is the safe way to check the primitive on a given unit.

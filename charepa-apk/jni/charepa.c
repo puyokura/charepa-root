@@ -990,8 +990,19 @@ int main(int argc, char **argv)
           close(p);
       } else say("/proc/myroot errno=%d\n", errno); }
 
-    install_hook();
-
-    say("RESULT ROOT uid=%d eff=0x%08x\n", getuid(), eff_of(0));
-    return 0;
+    /* The return value matters. Measured: this call used to be discarded, so a
+     * run whose hook failed (no usable service path, payload copy failed, or
+     * /system would not remount) still printed "RESULT ROOT" and exited 0. The
+     * device was then root until the next reboot and nothing came back, which
+     * reads as a success in any log that greps for RESULT. Root in this boot
+     * and persistence are different outcomes, so they get different lines and
+     * different exit codes. */
+    { int hooked = install_hook();
+      if (hooked) {
+          say("RESULT ROOT uid=%d eff=0x%08x (persistent)\n", getuid(), eff_of(0));
+          return 0;
+      }
+      say("RESULT ROOT uid=%d but the hook failed; a reboot will not restore it\n",
+          getuid());
+      return 1; }
 }
