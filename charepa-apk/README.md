@@ -280,6 +280,30 @@ tools/consistency.sh     checks the defaults in this file against charepa.c
 charepa.apk              the built, signed deliverable
 ```
 
+## What is still blocked, and why it is not a code problem
+
+Two checks remain, and neither can be finished from a host:
+
+**adb on this unit.** After `/data` was cleared by hand while the framework was
+not running, the USB identity became `0474:0317` with a single MTP interface.
+Everything that can be tried without the screen has been: the MTP interface
+answers (`mtp-detect` reports the model and serial, `mtp-sendfile` writes files);
+`adb devices` stays empty across server restarts, root-hub port cycles on both
+`usb1-port2` and `usb1-port3`, a LAN sweep for 5555, and mDNS for `_adb._tcp`.
+The properties that make adbd start were part of what was deleted. Restoring
+them needs either a normal boot that rebuilds them, or the on-device setting —
+and the authorisation keys were kept in `/data/misc/adb`, so no new tap is
+needed once adbd comes back.
+
+**A BR2.** No unit has been connected. `tools/br2_verify.sh` is ready and
+refuses anything whose `ro.product.model` is not `TAB-A03-BR2`; what has and has
+not been measured about that model is in `../docs/br2-compatibility.md`.
+
+One MTP quirk is worth knowing while the unit is in this state: sending a file
+with an `.apk` suffix fails with `PTP Layer error 2002`, while the identical
+bytes renamed to `.bin` succeed. That is the device's MTP implementation, not the
+file: 705 KB of zeros and the APK copied to `.bin` both send fine.
+
 ## Licence
 
 MIT, see `LICENSE`.
