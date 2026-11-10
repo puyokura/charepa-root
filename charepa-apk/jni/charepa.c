@@ -671,48 +671,97 @@ static const struct hook_target hook_targets[] = {
     { NULL, NULL, NULL }
 };
 
+/* The service stanzas are not all in /init.rc.
+ *
+ * Measured on the BR2: `service calibinit /system/bin/calibinit.sh` with
+ * `class main` lives in /init.pxa1928.rc, reached through
+ * `import /init.${ro.hardware}.rc` in /init.rc. Reading only /init.rc therefore
+ * missed the hook that unit actually used, and would have replaced debuggerd
+ * while the existing calibinit.sh kept doing its work.
+ *
+ * `ro.hardware` is read straight from /proc/cmdline's androidboot fields is not
+ * possible (it is a property, not a cmdline entry), and getprop is a process.
+ * The property file is the cheapest readable source, and init keeps it at
+ * /data/property. If it cannot be read, the filename is guessed from the files
+ * that exist, which is enough because init only imports the one it is told to.
+ */
+static int read_prop(const char *name, char *out, size_t sz)
+{
+    char path[512];
+    snprintf(path, sizeof path, "/data/property/%s", name);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    size_t n = fread(out, 1, sz - 1, f);
+    fclose(f);
+    out[n] = 0;
+    while (n && (out[n-1] == '\n' || out[n-1] == '\r')) out[--n] = 0;
+    return n > 0;
+}
+
+/* rc paths worth reading, in order */
+static int rc_paths(char paths[][512], int max)
+{
+    int n = 0;
+    snprintf(paths[n++], 512, "/init.rc");
+    char hw[128] = {0};
+    if (read_prop("ro.hardware", hw, sizeof hw) && hw[0])
+        snprintf(paths[n++], 512, "/init.%s.rc", hw);
+    /* the file exists whether or not the property was readable */
+    if (access("/init.pxa1928.rc", F_OK) == 0)
+        snprintf(paths[n++], 512, "/init.pxa1928.rc");
+    return n > max ? max : n;
+}
+
 /* Is this path something init starts? Existence alone is not enough: the whole
- * point is that init execs it at boot. For debuggerd the stanza is known to be
- * `service debuggerd /system/bin/debuggerd` with `class main` on BS; calibinit
- * appears as a `class main` service in the earlier BR2 record. Both were checked
- * by reading init.rc on the unit that had them. */
+ * point is that init execs it at boot, in a `class main` stanza. */
 static int target_is_usable(const char *path)
 {
     if (access(path, F_OK) != 0) return 0;
-    FILE *f = fopen("/init.rc", "r");
-    if (!f) {
+
+    char rcs[3][512];
+    int nrc = rc_paths(rcs, 3);
+    int readable = 0;
+
+    for (int r = 0; r < nrc; r++) {
+        FILE *f = fopen(rcs[r], "r");
+        if (!f) continue;
+        readable++;
+        char line[512];
+        int is_service = 0;
+        while (fgets(line, sizeof line, f)) {
+            if (!strncmp(line, "service ", 8)) {
+                /* The path has to end where the token ends. A plain strstr
+                 * matched "debuggerd64" as a hit for "debuggerd": measured with
+                 * a synthetic rc where only the 64-bit service existed, the
+                 * predicate reported debuggerd usable and would have replaced a
+                 * file nothing runs. */
+                const char *p = strstr(line, path);
+                size_t len = strlen(path);
+                is_service = p && (p[len] == ' ' || p[len] == '\n' ||
+                                   p[len] == '\r' || p[len] == 0);
+            } else if (is_service && !strncmp(line, "    class ", 10)) {
+                /* Only a `class main` service is started by class_start main at
+                 * boot. Measured: the first version returned "usable" for a
+                 * stanza under `class late_start`, because it set the "found"
+                 * flag on the service line and never cleared it. Returning from
+                 * the class branch is what makes the answer mean what it says. */
+                if (strstr(line, "main")) { fclose(f); return 1; }
+                is_service = 0;
+            } else if (line[0] != ' ' && line[0] != '\n') {
+                is_service = 0;
+            }
+        }
+        fclose(f);
+    }
+
+    if (!readable) {
         /* init.rc is 0640 root; before root is obtained it cannot be read, and
          * at that point nothing has been written yet either. Treat unreadable
-         * init.rc as "no opinion": fall back to existence, which is what the
-         * earlier runs relied on. */
-        say("hook: /init.rc unreadable, choosing by existence: %s\n", path);
+         * as "no opinion": fall back to existence, which is what the earlier
+         * runs relied on. */
+        say("hook: no readable rc, choosing by existence: %s\n", path);
         return 1;
     }
-    char line[512];
-    int is_service = 0;
-    while (fgets(line, sizeof line, f)) {
-        if (!strncmp(line, "service ", 8)) {
-            /* The path has to end where the token ends. A plain strstr matched
-             * "debuggerd64" as a hit for "debuggerd": measured with a synthetic
-             * rc where only the 64-bit service existed, the predicate reported
-             * debuggerd usable and would have replaced a file nothing runs. */
-            const char *p = strstr(line, path);
-            size_t n = strlen(path);
-            is_service = p && (p[n] == ' ' || p[n] == '\n' || p[n] == '\r' || p[n] == 0);
-        } else if (is_service && !strncmp(line, "    class ", 10)) {
-            /* Only a `class main` service is started by class_start main at
-             * boot. Measured: the first version of this loop returned "usable"
-             * for a stanza under `class late_start`, because it set the "found"
-             * flag on the service line and never cleared it when the class
-             * turned out to be something else. Returning early here, instead of
-             * tracking a flag, is what makes the answer mean what it says. */
-            if (strstr(line, "main")) { fclose(f); return 1; }
-            is_service = 0;
-        } else if (line[0] != ' ' && line[0] != '\n') {
-            is_service = 0;
-        }
-    }
-    fclose(f);
     return 0;      /* named but no `class main`, or not named at all */
 }
 

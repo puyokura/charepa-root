@@ -1,4 +1,4 @@
-﻿/* target_test.c - exercise charepa's hook-target predicate without needing
+/* target_test.c - exercise charepa's hook-target predicate without needing
  * anything off the unit
  *
  * The predicate decides which /system file gets replaced, and it is the one
@@ -58,6 +58,41 @@ static int usable(const char *path, const char *rc)
     }
     fclose(f);
     return 0;
+}
+
+/* the multi-file form, which is what charepa.c reads now: /init.rc plus
+ * /init.${ro.hardware}.rc. Measured on BR2, the calibinit stanza is in
+ * /init.pxa1928.rc and not in /init.rc at all, so a single-file read missed the
+ * hook that unit actually used. */
+static int usable_multi(const char *path, char *const *rcs, int nrc)
+{
+    char full[512];
+    snprintf(full, sizeof full, "%s%s", ROOT, path);
+    if (access(full, F_OK) != 0) return 0;
+
+    int readable = 0;
+    for (int r = 0; r < nrc; r++) {
+        FILE *f = fopen(rcs[r], "r");
+        if (!f) continue;
+        readable++;
+        char line[512];
+        int is_service = 0;
+        while (fgets(line, sizeof line, f)) {
+            if (!strncmp(line, "service ", 8)) {
+                const char *p = strstr(line, path);
+                size_t n = strlen(path);
+                is_service = p && (p[n] == ' ' || p[n] == '\n' ||
+                                   p[n] == '\r' || p[n] == 0);
+            } else if (is_service && !strncmp(line, "    class ", 10)) {
+                if (strstr(line, "main")) { fclose(f); return 1; }
+                is_service = 0;
+            } else if (line[0] != ' ' && line[0] != '\n') {
+                is_service = 0;
+            }
+        }
+        fclose(f);
+    }
+    return readable ? 0 : 1;
 }
 
 static void touch(const char *name)
@@ -132,6 +167,29 @@ int main(void)
     printf("unreadable init.rc:\n");
     EXPECT("debuggerd usable by existence only",
            usable("/system/bin/debuggerd", "/tmp/tt_does_not_exist.rc"), 1);
+
+    /* the two-file case, which is how charepa.c reads them now: the service is
+     * in the hardware rc, reached by `import /init.${ro.hardware}.rc` */
+    const char *main_rc = "/tmp/tt_main.rc";
+    write_rc(main_rc,
+        "import /init.environ.rc\nimport /init.${ro.hardware}.rc\n\n"
+        "service debuggerd /system/bin/debuggerd\n"
+        "    class main\n");
+    const char *hw_rc = "/tmp/tt_hw.rc";
+    write_rc(hw_rc,
+        "service calibinit /system/bin/calibinit.sh\n"
+        "    class main\n"
+        "    oneshot\n");
+    char *both[2]; both[0] = (char *)main_rc; both[1] = (char *)hw_rc;
+    printf("init.rc + hardware rc (the measurement that changed the code):\n");
+    EXPECT("debuggerd usable from the main rc",
+           usable_multi("/system/bin/debuggerd", both, 2), 1);
+    EXPECT("calibinit.sh usable from the hardware rc",
+           usable_multi("/system/bin/calibinit.sh", both, 2), 1);
+
+    /* and the single-file read that the old code did would have missed it */
+    EXPECT("reading only init.rc misses calibinit",
+           usable_multi("/system/bin/calibinit.sh", both, 1), 0);
 
     printf("\n%s\n", fails ? "RESULT: FAILURES" : "RESULT: all predicates behave");
     return fails ? 1 : 0;
