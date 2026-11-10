@@ -7,7 +7,7 @@
 | --- | ---: | ---: | --- |
 | `charepa-root-full-story.md` | 3,539 | 154K | 全過程記録。19 章＋付録 |
 | `charepa-root-source-code.md` | 3,485 | 139K | `src/` のソース全文（19 ファイル、SHA-256 付き） |
-| `br2-compatibility.md` | 66 | 4.0K | BR2 で通用するかの静的判定（実機検証は未実施） |
+| `br2-compatibility.md` | 66 | 4.4K | BR2 で通用するかの静的判定（実機検証は未実施） |
 
 ## どこから読むか
 
