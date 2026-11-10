@@ -689,7 +689,6 @@ static int target_is_usable(const char *path)
         return 1;
     }
     char line[512];
-    int found = 0;
     int is_service = 0;
     while (fgets(line, sizeof line, f)) {
         if (!strncmp(line, "service ", 8)) {
@@ -700,8 +699,13 @@ static int target_is_usable(const char *path)
             const char *p = strstr(line, path);
             size_t n = strlen(path);
             is_service = p && (p[n] == ' ' || p[n] == '\n' || p[n] == '\r' || p[n] == 0);
-            if (is_service) found = 1;
         } else if (is_service && !strncmp(line, "    class ", 10)) {
+            /* Only a `class main` service is started by class_start main at
+             * boot. Measured: the first version of this loop returned "usable"
+             * for a stanza under `class late_start`, because it set the "found"
+             * flag on the service line and never cleared it when the class
+             * turned out to be something else. Returning early here, instead of
+             * tracking a flag, is what makes the answer mean what it says. */
             if (strstr(line, "main")) { fclose(f); return 1; }
             is_service = 0;
         } else if (line[0] != ' ' && line[0] != '\n') {
@@ -709,7 +713,7 @@ static int target_is_usable(const char *path)
         }
     }
     fclose(f);
-    return found ? 1 : 0;
+    return 0;      /* named but no `class main`, or not named at all */
 }
 
 /* Pick the target once, before anything is written. */
