@@ -746,6 +746,14 @@ static int be_root(void);
 static void ensure_real_label(void)
 {
     if (!HOOK_REAL || access(HOOK_REAL, F_OK) != 0) return;
+    /* The label to restore belongs to the target, not to debuggerd: calibinit.sh
+     * has no exec type of its own in the record, so there is nothing to put back
+     * and the table says so by leaving exec_type NULL. */
+    const char *want = NULL;
+    for (int i = 0; hook_targets[i].path; i++)
+        if (hook_targets[i].path == HOOK_PATH) { want = hook_targets[i].exec_type; break; }
+    if (!want) { say("label: %s has no exec type to restore\n", HOOK_REAL); return; }
+
     { char cur[128] = {0};
       if (getxattr(HOOK_REAL, "security.selinux", cur, sizeof cur - 1) > 0) {
           if (strstr(cur, "debuggerd_exec")) { say("label: %s already correct\n", HOOK_REAL); return; }
@@ -769,7 +777,7 @@ static void ensure_real_label(void)
         close(blk);
         return;
     }
-    set_selinux_label(HOOK_REAL, "u:object_r:debuggerd_exec:s0");
+    set_selinux_label(HOOK_REAL, want);
     sync();
     ioctl(blk, BLKROSET, &(int){1});
     mount(NULL, "/system", NULL, MS_REMOUNT | MS_RDONLY, NULL);
@@ -923,7 +931,13 @@ int main(int argc, char **argv)
           if (w == 1) {
               say("already rooted: /proc/myroot accepted a write\n");
               say("uid=%d euid=%d capget=0x%08x\n", getuid(), geteuid(), eff_of(0));
-              /* a unit hooked by an older build still needs this */
+              /* A unit hooked by an older build still needs its label repaired.
+               * The target has to be chosen first: HOOK_REAL still points at
+               * debuggerd here, so on a unit that was hooked through
+               * calibinit.sh this would look at a .real that does not exist and
+               * silently do nothing. Measured on BS the default is correct, but
+               * the choice is what makes either unit work. */
+              choose_hook_target();
               ensure_real_label();
               say("RESULT ROOT uid=%d (via /proc/myroot)\n", getuid());
               return getuid() == 0 ? 0 : 1;
