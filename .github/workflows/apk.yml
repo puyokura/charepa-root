@@ -26,6 +26,12 @@ defaults:
 jobs:
   apk:
     runs-on: ubuntu-latest
+    # Creating a release needs contents: write. Without this block the default
+    # token is read-only on a push event, and the tag run failed with
+    # "Resource not accessible by integration" (403) at the release step after
+    # the APK itself had built and been verified.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
