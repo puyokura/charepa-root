@@ -49,6 +49,40 @@ for f in charepa-apk/build.sh charepa-apk/app/AndroidManifest.xml \
   if [ -e "$ROOT/$f" ]; then echo "  ok      $f"; else echo "  MISSING $f"; fail=1; fi
 done
 
+echo '== docs/README.md index: lines and bytes per file =='
+# The index carried rounded K values and was measured wrong for two files
+# (3,539 listed where the file had 3,538 lines, 139K where it had 139,470 bytes).
+#
+# This block is deliberately small. The first version pulled the numbers apart
+# with sed and awk field splitting, and when fed a rewritten index it matched
+# thousands of lines and reported "ok" for the same file seven times. Fixed names
+# and two plain greps are harder to get wrong than a general parser.
+INDEX="$ROOT/docs/README.md"
+stale=0
+if [ -f "$INDEX" ]; then
+  for name in charepa-root-full-story.md charepa-root-source-code.md br2-compatibility.md; do
+    p="$ROOT/docs/$name"
+    if [ ! -f "$p" ]; then echo "  MISSING docs/$name"; stale=1; continue; fi
+    row=$(grep -F "\`$name\` |" "$INDEX" | head -1)
+    if [ -z "$row" ]; then echo "  NOT IN INDEX $name"; stale=1; continue; fi
+    # "| `name` | 3,538 | 153,575 |" -> the two numbers
+    stated_lines=$(printf '%s' "$row" | cut -d'|' -f3 | tr -d ' ,')
+    stated_bytes=$(printf '%s' "$row" | cut -d'|' -f4 | tr -d ' ,')
+    real_lines=$(wc -l < "$p")
+    real_bytes=$(wc -c < "$p")
+    if [ "$stated_lines" = "$real_lines" ] && [ "$stated_bytes" = "$real_bytes" ]; then
+      echo "  ok      $name ($real_lines lines, $real_bytes bytes)"
+    else
+      echo "  STALE   $name: index says $stated_lines lines / $stated_bytes bytes"
+      echo "                  file has $real_lines lines / $real_bytes bytes"
+      stale=1
+    fi
+  done
+else
+  echo "  docs/README.md missing"; fail=1
+fi
+[ "$stale" = 0 ] || fail=1
+
 echo
 [ "$fail" = 0 ] && echo "RESULT: consistent" || echo "RESULT: problems found"
 exit "$fail"
