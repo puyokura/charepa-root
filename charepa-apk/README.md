@@ -49,11 +49,43 @@ CHAREPA_BOOT: write /proc/myroot rc=1 errno=0 uid now 0
 
 and `echo 1 > /proc/myroot` answered `uid=0(root) ... Permissive`.
 
-TAB-A03-BR2 is **not** verified. The partitions are the same shape as BS
-(`system` p16, `boot` p15, `recovery` p7), and the two models share USB ID
-`0bb4:4e16`, the kernel version and the platform, but nothing has been run on
-one. The workflow refuses to start unless `ro.product.model` is
-`TAB-A03-BR2`, so it cannot be pointed at a BS by mistake.
+**TAB-A03-BR2 was measured too.** A unit was connected this session (serial
+`0C8R236091`, `02.04.000`, kernel `3.10.33 #2` built 2019-11-25, `ro.hardware`
+`pxa1928`) and the same APK was run on it.
+
+The unit arrived already rooted by the earlier run, so `calibinit.sh` was parked
+as `calibinit.sh.parked` and the tablet rebooted until it was genuinely unrooted:
+`Enforcing`, no `/proc/myroot`, module not loaded. From there:
+
+```
+attempt 6: cred=0xffffffc07547e540  module_errno=8
+           AVC win phys=0x73599540 off=1280 stores=209
+           init_module rc=0 errno=0 (156576 bytes)
+           hook: target=/system/bin/debuggerd (real=...)
+           RESULT ROOT uid=0 (persistent)
+```
+
+Two reboots each brought it back the same way as the BS:
+
+```
+CHAREPA_BOOT: context=u:r:init:s0
+CHAREPA_BOOT: init_module rc=0 errno=0 (Success) bytes=156576
+CHAREPA_BOOT: write /proc/myroot rc=1 errno=0 uid now 0
+```
+
+`pm uninstall com.charepa` followed by a reboot also came back with `uid=0`.
+`validate` printed `VALIDATE PASS`, and `/proc/iomem` reported `System RAM
+0x01000000..0x7fffffff`, the same range as the BS.
+
+One difference was measured and fixed because of it: the BR2's `init.rc` has no
+`calibinit` stanza, and `service calibinit /system/bin/calibinit.sh` lives in
+`/init.pxa1928.rc`, reached through `import /init.${ro.hardware}.rc`. The
+predicate read only `/init.rc`, so it could not see the hook that unit was
+already using. It now reads both. On this build `debuggerd` still won, because
+that service is `class main` there as well.
+
+The workflow refuses to start unless `ro.product.model` is `TAB-A03-BR2`, so it
+cannot be pointed at a BS by mistake.
 
 ## The two halves, and why the order matters
 
@@ -311,19 +343,16 @@ charepa.apk              the built, signed deliverable
 `br2_sim.sh` is a simulation and says so in its own header: it proves the
 runbook's sequence and guards, not that anything works on a BR2.
 
-## What is still blocked, and why it is not a code problem
+## What was blocked and is now resolved
 
-Two checks remain, and neither can be finished from a host:
+**A BR2 was connected.** The unit described above was measured end to end;
+`tools/br2_verify.sh` refuses anything whose `ro.product.model` is not
+`TAB-A03-BR2`, and the compatibility notes in `../docs/br2-compatibility.md`
+have that model's values in them now.
 
-**adb on this unit.** After `/data` was cleared by hand while the framework was
-not running, the USB identity became `0474:0317` with a single MTP interface.
-Everything that can be tried without the screen has been: the MTP interface
-answers (`mtp-detect` reports the model and serial, `mtp-sendfile` writes files);
-`adb devices` stays empty across server restarts, root-hub port cycles on both
-`usb1-port2` and `usb1-port3`, a LAN sweep for 5555, and mDNS for `_adb._tcp`.
-
-The mechanism is visible in the descriptor. The tablet presents exactly one
-interface:
+**adb came back on the BS** after the on-device USB debugging setting was turned
+on, which rebuilt the properties that start adbd. Measured while it was gone:
+the USB identity had become `0474:0317` with a single MTP interface,
 
 ```
 bInterfaceClass      255 (vendor specific)
@@ -331,19 +360,14 @@ bInterfaceSubClass   255          <- MTP
 bInterfaceProtocol     0
 ```
 
-adbd's interface is class `0xff`, subclass `0x42`, protocol `0x01`. With
-subclass `0xff` there is no interface for adb to claim, which is why every host
-side attempt changes nothing: the descriptor is produced by the device. The
-properties that make adbd start were part of what was deleted. Restoring
-them needs either a normal boot that rebuilds them, or the on-device setting —
-and the authorisation keys were kept in `/data/misc/adb`, so no new tap is
-needed once adbd comes back.
+where adbd's interface is class `0xff`, subclass `0x42`, protocol `0x01`. With
+subclass `0xff` there was no interface for adb to claim, which is why server
+restarts, root-hub port cycles on `usb1-port2` and `usb1-port3`, a LAN sweep for
+5555 and mDNS for `_adb._tcp` all changed nothing: the descriptor is produced by
+the device. The authorisation keys were kept in `/data/misc/adb`, so no new tap
+was needed once adbd returned.
 
-**A BR2.** No unit has been connected. `tools/br2_verify.sh` is ready and
-refuses anything whose `ro.product.model` is not `TAB-A03-BR2`; what has and has
-not been measured about that model is in `../docs/br2-compatibility.md`.
-
-One MTP quirk is worth knowing while the unit is in this state: sending a file
+One MTP quirk is worth knowing while a unit is in that state: sending a file
 with an `.apk` suffix fails with `PTP Layer error 2002`, while the identical
 bytes renamed to `.bin` succeed. That is the device's MTP implementation, not the
 file: 705 KB of zeros and the APK copied to `.bin` both send fine.
