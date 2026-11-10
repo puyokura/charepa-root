@@ -185,8 +185,14 @@ adb shell 'run-as com.charepa /data/data/com.charepa/files/bin/charepa all'
 Pass no range. The chain derives it from `/proc/iomem`, and an explicit
 `02000000 40000000` was measured to exclude everything above 1 GB: with that
 range most runs ended in `RESULT no cred`, while the derived range found the
-cred seven times in a row and then five more. The fourth argument is the store
-budget, and 8000 is what the working runs used.
+cred seven times in a row and then five more.
+
+The arguments, in order: `all [lo hi [window budget avclo avchi]]`, all optional.
+The store budget is the *fifth*, not the fourth (the fourth is the page window,
+default 2048). The default budget is 8000: runs that won used 392, 928, 1005 and
+2415 stores, while runs that spent 2069 and 2387 and then stopped at the old
+2600 cap reported `AVC budget spent ... AVC no win`. The node moves between
+boots, so the budget has to cover the window rather than be tuned to one boot.
 
 The sweep can miss: where the `avc_node` lands moves between boots, and a run
 that stores into the wrong place reboots the tablet. Measured wins came at
