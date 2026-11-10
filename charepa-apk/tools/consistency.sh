@@ -25,6 +25,33 @@ else
   echo "  README does NOT agree"; fail=1
 fi
 
+echo '== the FNV constant guard matches the prebuilt module =='
+# charepa refuses to hand the kernel a module whose FNV-1a 64 differs from
+# KO_FNV. That constant is a literal in the source, so it goes stale silently if
+# the module is ever rebuilt. Check it here rather than find out on a unit.
+mod="$ROOT/charepa-apk/prebuilt/myroot.ko"
+if [ -f "$mod" ] && command -v python3 >/dev/null 2>&1; then
+  want=$(grep -o '#define KO_FNV 0x[0-9a-f]*' "$SRC" | awk '{print $3}')
+  real=$(python3 - "$mod" <<'PY'
+import sys
+h = 0xcbf29ce484222325
+with open(sys.argv[1], 'rb') as f:
+    while True:
+        b = f.read(8192)
+        if not b: break
+        for c in b:
+            h ^= c
+            h = (h * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+print("0x%016x" % h)
+PY
+)
+  echo "  code: $want"
+  echo "  file: $real"
+  if [ "$want" = "$real" ]; then echo "  matches"; else echo "  MISMATCH"; fail=1; fi
+else
+  echo "  skipped (module or python3 missing)"
+fi
+
 echo '== the shipped APK carries these assets =='
 if [ -f "$APK" ]; then
   work=$(mktemp -d)
