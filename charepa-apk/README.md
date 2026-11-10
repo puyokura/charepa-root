@@ -268,6 +268,7 @@ jni/bootpayload.c        what runs at boot from init's domain
 prebuilt/myroot.ko       the module, built offline against the vendor tree
 app/                     the Activity that stages and runs the binaries
 tools/br2_verify.sh      the five checks for a BR2, refusing any other model
+tools/consistency.sh     checks the defaults in this file against charepa.c
 charepa.apk              the built, signed deliverable
 ```
 
