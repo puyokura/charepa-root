@@ -32,7 +32,7 @@ kallsyms_lookup_name  printk  proc_create_data  remove_proc_entry
 
 すべて `kallsyms_lookup_name()` 経由で解決する。ハードコードされたアドレスは無い。`CONFIG_KALLSYMS_ALL=y` が BR2 でも有効なら解決できる。
 
-BS では実測で 4 シンボル（`proc_create_data`、`kallsyms_lookup_name`、`printk`、`remove_proc_entry`）が輸出されていることを確認した。`commit_creds`、`prepare_kernel_cred`、`selinux_enforcing` は `kallsyms_lookup_name` で引く文字列で、輸出の有無は未測定。
+BS で輸出を実測したのは 4 件（`proc_create_data`、`kallsyms_lookup_name`、`printk`、`remove_proc_entry`）。残る 3 件（`commit_creds`、`prepare_kernel_cred`、`selinux_enforcing`）は `kallsyms_lookup_name()` に渡す文字列で、**輸出の有無は BS でも未測定**。ただし BS でモジュールが実際にロードされ `init_module rc=0` を返しているので、この 3 件が解決できたことは動作から間接的に分かる。解決に失敗すれば `become_root()` が `-ENOENT` を返し、モジュールの `myroot_init()` が失敗してロード自体が拒否される。
 
 ## vermagic
 
@@ -56,7 +56,7 @@ vermagic=3.10.33 SMP preempt mod_unload aarch64
 - BR2 の `/proc/iomem` の `System RAM` 範囲 —— 未測定
 - BR2 の `by-name` パス —— 未測定
 - BR2 の `init.rc` の `debuggerd` stanza —— 未測定
-- `commit_creds` / `prepare_kernel_cred` / `selinux_enforcing` の輸出 —— BS でも未測定
+- `commit_creds` / `prepare_kernel_cred` / `selinux_enforcing` の輸出 —— BS では間接的に確認（モジュールがロードされた）。BR2 では未測定
 - `avc_node` の位置 —— 起動ごとに動く。BR2 では別途当たり待ちが必要
 
 ## 結論
