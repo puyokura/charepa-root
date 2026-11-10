@@ -43,9 +43,11 @@ charepa-apk/tools/consistency.sh    既定値・同梱物・参照パスの整�
 BS で実測したこと（`charepa-apk/README.md` に根拠付き）:
 
 - 素の端末に APK だけを入れて `all` を実行し、`init_module rc=0` → `/proc/myroot` → `uid=0`
-- 再起動後も payload が `u:r:init:s0` で走り root が復帰（10 回以上の再起動・電源断で確認）
+- 再起動後も payload が `u:r:init:s0` で走り root が復帰（フック設置後に見た再起動 4 回すべて）
 - アプリを `pm uninstall` した後も root は残る
 - CI が APK をビルド・署名し、その成果物も端末で動作を確認
+
+USB が切れただけの場合は再起動していないので、payload は走らない。そのとき確かめられるのは「モジュールが残っていて root が使える」ことで、永続化の証拠にはならない。この 2 つは区別して書いてある。
 
 BR2 では**未検証**。`docs/br2-compatibility.md` に、コードが固定している値と未測定の項目を分けて書いてある。
 

@@ -11,7 +11,7 @@ Everything below was measured on a TAB-A03-BS (Android 5.1, kernel 3.10.33
 | Claim | Evidence |
 | --- | --- |
 | Root from the adb shell context | `charepa all` reached `init_module rc=0`, then `/proc/myroot` gave `uid=0(root)`, `Permissive` |
-| Root survives a reboot | ten reboots, power cuts and USB drops: each time the payload ran in `u:r:init:s0`, `init_module rc=0`, recreated `/proc/myroot`, and one byte through it gave `uid=0` |
+| Root survives a reboot | every reboot that was watched after the hook went in (four in this session) brought it back: the payload ran in `u:r:init:s0`, logged `init_module rc=0`, recreated `/proc/myroot`, and one byte through it gave `uid=0` |
 | Root survives deleting the app | `pm uninstall com.charepa`, then a reboot: `/proc/myroot` came back and answered, with no APK installed at all |
 | The app itself can reach root | `am start --es mode all` ended with `RESULT ROOT uid=0`, from a process whose own `CapBnd` is `0000000000000000` |
 | Running twice is safe | a unit whose hook is already installed answers `EEXIST` from `init_module`; that now counts as success, so the second run reports `already rooted` and `RESULT ROOT uid=0` instead of a false failure |
@@ -227,7 +227,8 @@ is the safe way to check the primitive on a given unit.
 
 Measured repeatedly on this unit: the tablet disappears from `adb devices` while
 a sweep runs, and `adb kill-server` does not bring it back. Cycling the root-hub
-port does, in one try:
+port does — it worked in one try on the early drops, and on later ones it took
+up to six cycles before the device re-enumerated:
 
 ```sh
 echo 1 > /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port2/disable
@@ -235,7 +236,14 @@ sleep 2
 echo 0 > /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port2/disable
 ```
 
-The device comes back with root intact; a `reboot` is not needed.
+The port number is not fixed: the tablet was seen on `1-2` directly and on
+`1-3.1` behind the internal hub, so check `lsusb` for the current one before
+writing to sysfs.
+
+What this recovers is the connection, not a boot. The payload did not run, so
+the tablet is merely still the running system with the module loaded; that is a
+different fact from surviving a reboot, and the two are kept apart above.
+The device comes back with root intact and no `reboot` is needed.
 
 ### What breaks adb, and what does not
 
