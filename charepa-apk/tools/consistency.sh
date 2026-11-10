@@ -72,7 +72,8 @@ fi
 echo '== files the workflows reference =='
 for f in charepa-apk/build.sh charepa-apk/app/AndroidManifest.xml \
          charepa-apk/prebuilt/myroot.ko src/prebuilt/myroot.ko \
-         src/tools/hunt2.sh Makefile docs/README.md \n         charepa-apk/tools/target_test.c; do
+         src/tools/hunt2.sh Makefile docs/README.md \
+         charepa-apk/tools/target_test.c; do
   if [ -e "$ROOT/$f" ]; then echo "  ok      $f"; else echo "  MISSING $f"; fail=1; fi
 done
 
