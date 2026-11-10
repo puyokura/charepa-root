@@ -171,14 +171,27 @@ files, then run the staged copy — measured, nothing needs to be pushed:
 
 ```sh
 adb shell am start -n com.charepa/.MainActivity --es mode validate
-adb shell 'run-as com.charepa /data/data/com.charepa/files/bin/charepa all 02000000 40000000 2048 2600'
+adb shell 'run-as com.charepa /data/data/com.charepa/files/bin/charepa all'
 ```
+
+Pass no range. The chain derives it from `/proc/iomem`, and an explicit
+`02000000 40000000` was measured to exclude everything above 1 GB: with that
+range most runs ended in `RESULT no cred`, while the derived range found the
+cred seven times in a row and then five more. The fourth argument is the store
+budget, and 8000 is what the working runs used.
 
 The sweep can miss: where the `avc_node` lands moves between boots, and a run
 that stores into the wrong place reboots the tablet. Measured wins came at
-attempts 6, 7 and 23 of their loops, so repeat the second command until the log
-says `init_module rc=0`. A run that reports `module_errno=8` has already passed
-the capability check and goes straight to `init_module`.
+attempts 5, 6, 7 and 23 of their loops, so repeat the second command until the
+log says `init_module rc=0`. A run that reports `module_errno=8` has already
+passed the capability check and goes straight to `init_module`.
+
+Two things make a run fail that look like success. The sweep rewrites the page
+cache holding `myroot.ko`, so a module pushed once goes bad after the first
+attempt and every later `init_module` answers `ENOEXEC`; push a fresh copy
+before each attempt, or watch the `load: fnv=` line for `MISMATCH`. And
+`install_hook` only flushes at the end, so a run that dies inside it can leave
+nothing behind after a reboot; the files are now `fsync`ed individually.
 
 Once the hook is in, the app is the entry point:
 
