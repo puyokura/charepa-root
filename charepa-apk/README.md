@@ -80,11 +80,29 @@ what the app does, and it works from `CapBnd = 0`.
 
 ## What the payload does at boot
 
-`/system/bin/debuggerd` is replaced by a static binary and relabelled
+One file under `/system/bin` is replaced by a static binary and relabelled
 `u:object_r:system_file:s0`. A label with no exec type means no SELinux type
 transition, so init starts the child in its own domain, which this policy does
-not restrict. The original binary is kept as `debuggerd.real` and the payload
-execs it afterwards.
+not restrict. The original is kept as `<name>.real` and the payload execs it
+afterwards.
+
+Which file is not hard-coded. The chain checks `/init.rc` at run time and picks
+the first candidate that init actually starts:
+
+| candidate | why | found on |
+| --- | --- | --- |
+| `/system/bin/debuggerd` | `class main`, runs every boot | BS (measured) |
+| `/system/bin/calibinit.sh` | `class main`, no seclabel, no `file_contexts` entry | BR2 (the earlier run's record) |
+
+Both are in the table because the earlier BR2 run made its persistence with
+`calibinit.sh`, while the BS `init.rc` has no `calibinit` stanza at all. The
+predicate requires the file to exist *and* a `service <path>` stanza whose
+`class` line names `main`, so a `late_start` service does not qualify; when
+neither candidate passes, the chain writes nothing and says
+`hook: no usable service path`. `tools/target_test.c` exercises six cases,
+including `debuggerd64` (which must not match `debuggerd`) and an unreadable
+`init.rc`, where the answer falls back to existence because the file is only
+readable after root.
 
 `debuggerd.real` gets its own label back, `u:object_r:debuggerd_exec:s0`. Without
 that the copy keeps the payload's `system_file` label, and the kernel logs
