@@ -572,6 +572,9 @@ static int put(const char *dst, const char *src, mode_t mode)
     int f = open(tmp, O_CREAT | O_TRUNC | O_WRONLY, mode);
     if (f < 0) { say("  create %s: %s\n", tmp, strerror(errno)); free(b); return -1; }
     ssize_t w = write(f, b, n);
+    /* see put_buf: a run that dies before the closing sync() loses the write */
+    if (w == (ssize_t)n && fsync(f) != 0)
+        say("  fsync %s: %s\n", tmp, strerror(errno));
     close(f);
     chmod(tmp, mode);
     free(b);
@@ -591,6 +594,14 @@ static int put_buf(const char *dst, const char *b, long n, mode_t mode)
     int f = open(tmp, O_CREAT | O_TRUNC | O_WRONLY, mode);
     if (f < 0) { say("  create %s: %s\n", tmp, strerror(errno)); return -1; }
     ssize_t w = write(f, b, n);
+    /* Durability has to happen here, not only at the end of install_hook.
+     * Measured: a run wrote debuggerd.real and the payload, logged both, and
+     * then died before the closing sync() — after the reboot the tablet had
+     * the original debuggerd and no .real at all. Everything had been written
+     * into the page cache and nothing had reached the medium. Flushing per
+     * file makes a run that dies partway leave the work it already did. */
+    if (w == (ssize_t)n && fsync(f) != 0)
+        say("  fsync %s: %s\n", tmp, strerror(errno));
     close(f);
     chmod(tmp, mode);
     if (w != (ssize_t)n) { say("  short write %s (%zd/%ld)\n", tmp, w, n); unlink(tmp); return -1; }
