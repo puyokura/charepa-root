@@ -15,14 +15,39 @@ uid 2000 (shell, CapEff=0)  ->  uid 0, CapEff=0000001fffffffff, enforce=0
 ## 中身
 
 ```
-docs/charepa-root-full-story.md     全過程記録（19 章、3,534 行）
+docs/charepa-root-full-story.md     全過程記録（19 章、3,538 行）
 docs/charepa-root-source-code.md    src/ のソース全文（SHA-256 付き）
+docs/br2-compatibility.md           BR2 で通用するかの静的判定（実機検証は未実施）
 docs/README.md                      章立てと読み方
 src/tools/                          実機・QEMU で使ったツール 16 本
 src/module/                         root 化モジュールのソースと Makefile
 src/prebuilt/myroot.ko              実際に動かしたモジュール（156,576 バイト）
+charepa-apk/                        APK 1 個で root を取る実装（下記）
 Makefile                            make tools / make module KDIR=...
 ```
+
+## APK（`charepa-apk/`）
+
+上の記録とは別に、**インストールした APK だけで root を取る**実装を同じリポジトリに置いてある。
+TAB-A03-BS で実測した。
+
+```
+charepa-apk/charepa.apk             出荷物。705,191 バイト、v1/v2/v3 署名済み
+charepa-apk/jni/charepa.c           チェーン本体（ION 書き込み→cred→AVC→hook 設置）
+charepa-apk/jni/bootpayload.c       起動時に init ドメインで走る payload
+charepa-apk/prebuilt/myroot.ko      モジュール（上のものと同じ 507ebb47...）
+charepa-apk/tools/br2_verify.sh     BR2 用の 5 段階検証（他機種は拒否）
+charepa-apk/tools/consistency.sh    既定値・同梱物・参照パスの整合性検査
+```
+
+BS で実測したこと（`charepa-apk/README.md` に根拠付き）:
+
+- 素の端末に APK だけを入れて `all` を実行し、`init_module rc=0` → `/proc/myroot` → `uid=0`
+- 再起動後も payload が `u:r:init:s0` で走り root が復帰（10 回以上の再起動・電源断で確認）
+- アプリを `pm uninstall` した後も root は残る
+- CI が APK をビルド・署名し、その成果物も端末で動作を確認
+
+BR2 では**未検証**。`docs/br2-compatibility.md` に、コードが固定している値と未測定の項目を分けて書いてある。
 
 実験の生データ（`k1`〜`k178` の 168 本、`b*` の 81 本、ログ、33MB のカーネルリーク）と、
 他者の公開物から落とした調査メモは含めていない。
